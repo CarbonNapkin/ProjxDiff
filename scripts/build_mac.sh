@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build the macOS DriveWorksDiff.app via PyInstaller.
+# Build the macOS ProjxDiff.app via PyInstaller.
 #
 # Run from the project root:
 #     ./scripts/build_mac.sh
 #
 # Requires Python 3.10+ with tkinter and PyInstaller available.
-# The build artifact lands in dist/DriveWorksDiff.app.
+# The build artifact lands in dist/ProjxDiff.app.
 
 set -euo pipefail
 
@@ -28,6 +28,6 @@ rm -rf build dist
 "$PYTHON" -m PyInstaller dw_compare.spec --clean --noconfirm
 
 echo
-echo "Built: $(pwd)/dist/DriveWorksDiff.app"
+echo "Built: $(pwd)/dist/ProjxDiff.app"
 echo "Smoke test:"
-echo "    open dist/DriveWorksDiff.app"
+echo "    open dist/ProjxDiff.app"

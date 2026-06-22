@@ -36,12 +36,12 @@ jobs:
         include:
           - os: windows-latest
             target_name: windows
-            artifact_path: dist/DriveWorksDiff.exe
-            artifact_filename: DriveWorksDiff-windows.exe
+            artifact_path: dist/ProjxDiff.exe
+            artifact_filename: ProjxDiff-windows.exe
           - os: macos-latest
             target_name: macos
-            artifact_path: dist/DriveWorksDiff.app
-            artifact_filename: DriveWorksDiff-macos.zip
+            artifact_path: dist/ProjxDiff.app
+            artifact_filename: ProjxDiff-macos.zip
             zip_app: true
 
     steps:
@@ -64,7 +64,7 @@ jobs:
         if: matrix.zip_app == true
         run: |
           cd dist
-          zip -r DriveWorksDiff-macos.zip DriveWorksDiff.app
+          zip -r ProjxDiff-macos.zip ProjxDiff.app
           cd ..
 
       - name: Upload artifact
@@ -72,7 +72,7 @@ jobs:
         with:
           name: ${{ matrix.artifact_filename }}
           path: |
-            ${{ matrix.target_name == 'macos' && 'dist/DriveWorksDiff-macos.zip' || matrix.artifact_path }}
+            ${{ matrix.target_name == 'macos' && 'dist/ProjxDiff-macos.zip' || matrix.artifact_path }}
           if-no-files-found: error
 
   release:
@@ -86,21 +86,21 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
-          name: DriveWorksDiff-windows.exe
+          name: ProjxDiff-windows.exe
           path: artifacts
 
       - name: Download macOS artifact
         uses: actions/download-artifact@v8
         with:
-          name: DriveWorksDiff-macos.zip
+          name: ProjxDiff-macos.zip
           path: artifacts
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            artifacts/DriveWorksDiff.exe
-            artifacts/DriveWorksDiff-macos.zip
+            artifacts/ProjxDiff.exe
+            artifacts/ProjxDiff-macos.zip
           body_path: CHANGELOG.md
           generate_release_notes: false
           draft: true

@@ -1,4 +1,4 @@
-# PyInstaller spec for DriveWorks Project Compare.
+# PyInstaller spec for Projx Diff.
 #
 # Produces a single-file, windowed executable. The version metadata (macOS
 # bundle CFBundleShortVersionString, Windows file-properties version block) is
@@ -52,11 +52,11 @@ if sys.platform == 'win32':
         "  kids=[\n"
         "    StringFileInfo([StringTable('040904B0', [\n"
         "      StringStruct('CompanyName', 'Base 10 Consultants'),\n"
-        "      StringStruct('FileDescription', 'DriveWorks Project Compare'),\n"
+        "      StringStruct('FileDescription', 'Projx Diff'),\n"
         "      StringStruct('FileVersion', '%(s)s'),\n"
-        "      StringStruct('InternalName', 'DriveWorksDiff'),\n"
-        "      StringStruct('OriginalFilename', 'DriveWorksDiff.exe'),\n"
-        "      StringStruct('ProductName', 'DriveWorks Project Compare'),\n"
+        "      StringStruct('InternalName', 'ProjxDiff'),\n"
+        "      StringStruct('OriginalFilename', 'ProjxDiff.exe'),\n"
+        "      StringStruct('ProductName', 'Projx Diff'),\n"
         "      StringStruct('ProductVersion', '%(s)s')])]),\n"
         "    VarFileInfo([VarStruct('Translation', [1033, 1200])])\n"
         "  ]\n"
@@ -89,7 +89,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='DriveWorksDiff',
+    name='ProjxDiff',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -108,9 +108,9 @@ exe = EXE(
 if sys.platform == 'darwin':
     app = BUNDLE(
         exe,
-        name='DriveWorksDiff.app',
+        name='ProjxDiff.app',
         icon=chosen_icon,
-        bundle_identifier='com.base10consultants.driveworksdiff',
+        bundle_identifier='com.base10consultants.projxdiff',
         info_plist={
             'CFBundleShortVersionString': _version,
             'CFBundleVersion': _version,

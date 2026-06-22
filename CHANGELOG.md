@@ -1,8 +1,18 @@
 # Changelog
 
-All notable changes to DriveWorks Project Compare are documented in this file.
+All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
+
+## [1.0.7] - 2026-06-22
+
+### Changed
+
+- **Renamed to Projx Diff.** The tool is no longer named after DriveWorks; it
+  remains an independent comparison tool for DriveWorks™ projects. Build
+  artifacts are now `ProjxDiff.app` / `ProjxDiff.exe`.
+- Added a trademark notice and a disclaimer making explicit that Projx Diff is
+  **not affiliated with, endorsed by, or tested by DriveWorks™ Ltd**.
 
 ## [1.0.6] - 2026-06-09
 
@@ -191,10 +201,11 @@ self-contained HTML diff report.
 - Self-contained HTML output suitable for sharing by email or hosting on
   an internal share.
 
-[1.0.6]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.6
-[1.0.5]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.5
-[1.0.4]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.4
-[1.0.3]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.3
-[1.0.2]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.2
-[1.0.1]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.1
-[1.0.0]: https://github.com/CarbonNapkin/DriveWorksDiff/releases/tag/v1.0.0
+[1.0.7]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.7
+[1.0.6]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.6
+[1.0.5]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.5
+[1.0.4]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.4
+[1.0.3]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.3
+[1.0.2]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.2
+[1.0.1]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.1
+[1.0.0]: https://github.com/CarbonNapkin/ProjxDiff/releases/tag/v1.0.0

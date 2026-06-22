@@ -1,11 +1,11 @@
-# Build the Windows DriveWorksDiff.exe via PyInstaller.
+# Build the Windows ProjxDiff.exe via PyInstaller.
 #
 # Run from the project root in PowerShell:
 #     .\scripts\build_windows.ps1
 #
 # Requires Python 3.10+ with tkinter included (the python.org installer does
 # this by default; check the "tcl/tk and IDLE" option if you customize).
-# The build artifact lands in dist\DriveWorksDiff.exe.
+# The build artifact lands in dist\ProjxDiff.exe.
 
 $ErrorActionPreference = "Stop"
 
@@ -31,6 +31,6 @@ if (Test-Path dist)  { Remove-Item -Recurse -Force dist }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
-Write-Host "Built: $(Resolve-Path dist\DriveWorksDiff.exe)"
+Write-Host "Built: $(Resolve-Path dist\ProjxDiff.exe)"
 Write-Host "Smoke test:"
-Write-Host "    .\dist\DriveWorksDiff.exe"
+Write-Host "    .\dist\ProjxDiff.exe"

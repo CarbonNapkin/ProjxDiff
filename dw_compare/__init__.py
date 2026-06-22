@@ -1,5 +1,5 @@
 """
-DriveWorks Project Comparison Tool
+Projx Diff
 
 A tool to compare two versions of a DriveWorks project and generate an HTML
 report showing all differences in variables, constants, forms, macros,

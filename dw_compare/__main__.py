@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DriveWorks Project Comparison Tool - CLI Entry Point
+Projx Diff (DriveWorks project comparison) - CLI Entry Point
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def find_project_folders() -> tuple[Path, Path] | None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compare two DriveWorks projects and generate HTML report',
+        description='Compare two DriveWorks™ projects and generate HTML report',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
@@ -168,7 +168,7 @@ Examples:
     parser.add_argument('--gui', action='store_true',
                        help='Launch the graphical UI instead of running on the command line')
     parser.add_argument('-V', '--version', action='version',
-                       version=f'DriveWorks Project Compare {__version__}')
+                       version=f'Projx Diff {__version__}')
 
     args = parser.parse_args()
 

@@ -1,5 +1,5 @@
 """
-Simple Tkinter GUI for the DriveWorks comparison tool.
+Simple Tkinter GUI for Projx Diff (a DriveWorks project comparison tool).
 
 Lets the user pick two .driveprojx projects, choose an output path, and run a
 comparison without using the command line.
@@ -30,8 +30,8 @@ except ImportError:
     resolve_output_path = None  # type: ignore
 
 
-PROJX_FILETYPES = [('DriveWorks project', '*.driveprojx')]
-APP_TITLE = f'DriveWorks Project Compare {__version__}'
+PROJX_FILETYPES = [('DriveWorks™ project', '*.driveprojx')]
+APP_TITLE = f'Projx Diff {__version__}'
 
 
 class _QueueWriter:
@@ -98,7 +98,7 @@ class CompareApp:
         help_menu = tk.Menu(menubar, tearoff=False, name='help')
         help_menu.add_command(label='How to Use', command=self._show_help)
         help_menu.add_separator()
-        help_menu.add_command(label='About DriveWorks Project Compare', command=self._show_about)
+        help_menu.add_command(label='About Projx Diff', command=self._show_about)
         menubar.add_cascade(label='Help', menu=help_menu)
 
         self.root.config(menu=menubar)
@@ -113,7 +113,7 @@ class CompareApp:
         top.configure(bg=bg)
 
         steps = (
-            "Compare two DriveWorks projects into one shareable HTML report.\n\n"
+            "Compare two DriveWorks™ projects into one shareable HTML report.\n\n"
             "1.  Old project — click Browse… and pick the baseline .driveprojx.\n"
             "2.  New project — click Browse… and pick the version to compare.\n"
             "3.  Output — defaults to your Downloads folder; change it with\n"
@@ -124,7 +124,7 @@ class CompareApp:
             "navigation, and form rules — with search and status filters on top.\n\n"
             "Everything runs locally; your project files never leave your computer."
         )
-        tk.Label(top, text='How to Use DriveWorks Project Compare', bg=bg,
+        tk.Label(top, text='How to Use Projx Diff', bg=bg,
                  font=('TkDefaultFont', 14, 'bold')).pack(padx=16, pady=(14, 6), anchor='w')
         tk.Label(top, text=steps, bg=bg, justify='left', anchor='w').pack(padx=16, pady=(0, 8), anchor='w')
 
@@ -151,11 +151,15 @@ class CompareApp:
         top.configure(bg=bg)
 
         pad = {'padx': 16, 'pady': 4}
-        tk.Label(top, text='DriveWorks Project Compare', bg=bg,
+        tk.Label(top, text='Projx Diff', bg=bg,
                  font=('TkDefaultFont', 14, 'bold')).pack(**pad, anchor='w')
         tk.Label(top, text=f'Version {__version__}', bg=bg).pack(padx=16, pady=(0, 8), anchor='w')
         tk.Label(top, text=f'© {__author__}', bg=bg).pack(padx=16, anchor='w')
         tk.Label(top, text=f'Licensed under {__license__}', bg=bg, fg='#555').pack(padx=16, anchor='w')
+        tk.Label(top, text='An independent tool. Not affiliated with, endorsed by, or\n'
+                          'tested by DriveWorks™ Ltd. DriveWorks™ is a trademark of\n'
+                          'DriveWorks Ltd.',
+                 bg=bg, fg='#777', justify='left').pack(padx=16, pady=(8, 0), anchor='w')
 
         link = tk.Label(top, text=__url__, bg=bg, fg='#3f51b5', cursor='hand2')
         link.pack(padx=16, pady=(8, 4), anchor='w')

@@ -68,7 +68,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DriveWorks Project Comparison</title>
+    <title>Projx Diff — Project Comparison</title>
     <style>
         :root {{
             --added-bg: #e6ffec;
@@ -347,12 +347,12 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
     </style>
 </head>
 <body>
-    <h1>🔄 DriveWorks Project Comparison</h1>
+    <h1>🔄 Projx Diff — Project Comparison</h1>
     
     <div class="meta">
         <strong>Old:</strong> {escape(old_name)} &nbsp;→&nbsp; <strong>New:</strong> {escape(new_name)}<br>
         Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by
-        <a href="{__url__}" style="color:#3f51b5;text-decoration:none;">DriveWorks Project Compare v{__version__}</a>
+        <a href="{__url__}" style="color:#3f51b5;text-decoration:none;">Projx Diff v{__version__}</a>
     </div>
     
     <div class="summary">
@@ -498,8 +498,13 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         filterRows();
     </script>
     <footer style="margin-top:24px;padding-top:12px;border-top:1px solid #e3e5e9;color:#888;font-size:12px;text-align:center;">
-        DriveWorks Project Compare v''' + __version__ + ''' &middot;
+        Projx Diff v''' + __version__ + ''' &middot;
         <a href="''' + __url__ + '''" style="color:#888;">''' + __url__ + '''</a>
+        <div style="margin-top:8px;font-size:11px;line-height:1.5;">
+            Projx Diff is an independent tool by Base 10 Consultants. It is not
+            affiliated with, endorsed by, or tested by DriveWorks&trade; Ltd.
+            DriveWorks&trade; is a trademark of DriveWorks Ltd.
+        </div>
     </footer>
 </body>
 </html>

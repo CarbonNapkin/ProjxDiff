@@ -1,6 +1,6 @@
-# DriveWorks Project Compare
+# Projx Diff
 
-A command-line tool to compare two versions of a DriveWorks project and generate an interactive HTML report showing all differences.
+A command-line tool to compare two versions of a DriveWorks™ project and generate an interactive HTML report showing all differences.
 
 ## Features
 
@@ -18,8 +18,8 @@ A command-line tool to compare two versions of a DriveWorks project and generate
 No dependencies required — just Python 3.10+.
 
 ```bash
-git clone https://github.com/CarbonNapkin/DriveWorksDiff.git
-cd DriveWorksDiff
+git clone https://github.com/CarbonNapkin/ProjxDiff.git
+cd ProjxDiff
 ```
 
 ## Usage
@@ -122,7 +122,7 @@ End users do not need Python installed. Builds use PyInstaller and the
 ./scripts/build_mac.sh
 ```
 
-Artifact lands at `dist/DriveWorksDiff.app`.
+Artifact lands at `dist/ProjxDiff.app`.
 
 ### Windows
 
@@ -132,7 +132,7 @@ In PowerShell:
 .\scripts\build_windows.ps1
 ```
 
-Artifact lands at `dist\DriveWorksDiff.exe`.
+Artifact lands at `dist\ProjxDiff.exe`.
 
 ### Releases
 
@@ -157,6 +157,13 @@ First-run notes:
 
 MIT
 
+## Disclaimer
+
+Projx Diff is an independent tool from Base 10 Consultants. It is **not
+affiliated with, endorsed by, or tested by DriveWorks™ Ltd**. DriveWorks™ is a
+trademark of DriveWorks Ltd; it is used here only to describe the file format
+that Projx Diff reads.
+
 ## Author
 
-[Base 10 Consultants](https://base10consultants.com) - DriveWorks Authorized Service Partner
+[Base 10 Consultants](https://base10consultants.com) - DriveWorks™ Authorized Service Partner

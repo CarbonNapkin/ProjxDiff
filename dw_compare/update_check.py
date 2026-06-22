@@ -31,7 +31,7 @@ def latest_release(timeout: float = 2.5) -> str | None:
     try:
         req = urllib.request.Request(
             _LATEST_API,
-            headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'DriveWorksDiff'},
+            headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'ProjxDiff'},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             tag = (json.load(resp).get('tag_name') or '').strip()
