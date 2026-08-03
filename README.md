@@ -87,9 +87,38 @@ Arguments:
   new_project         Path to new project folder or .driveprojx file
 
 Options:
-  -o, --output FILE   Output HTML file (default: dw_comparison.html)
-  --no-open           Don't auto-open report in browser
+  -o, --output FILE     Output file (default: dw_comparison.html / .json)
+  -f, --format FORMAT   html (default), json, or both. With both, the JSON
+                        lands next to the HTML with a .json extension.
+  --no-open             Don't auto-open report in browser
 ```
+
+### JSON output (for scripting)
+
+`--format json` writes a machine-readable change list instead of the HTML
+report — made for pipelines that track project changes over time:
+
+```bash
+python3 -m dw_compare old.driveprojx new.driveprojx --format json -o diff.json
+```
+
+The document has a versioned schema (`"schema": 1`): a `summary` with
+per-category added/removed/modified/unchanged counts, and a flat `changes`
+list — one record per changed element (`category`, `name`, `status`, and
+field-level `details` with raw old/new formulas). Unchanged elements are
+counted but never listed. `--format both` emits the HTML report and the JSON
+side by side in one run. JSON-only runs never open a browser.
+
+## Nightly Archive & Change Tracking
+
+`scripts/nightly_sync/` contains a scheduled-job script that archives every
+`.driveprojx` on a network share into a git repo each night and records what
+changed — per project, per category, per element — in a SQLite metrics
+database, with per-project HTML/JSON diff reports for drill-down and a
+self-contained static dashboard (trends, top projects/users/categories)
+regenerated after every run. It is site
+infrastructure (run it from Task Scheduler on Windows), not part of the
+packaged app. See [scripts/nightly_sync/README.md](scripts/nightly_sync/README.md).
 
 ## Supported File Types
 
@@ -110,7 +139,8 @@ dw_compare/
 ├── models.py        # Data classes (Variable, Constant, etc.)
 ├── parsers.py       # XML parsing functions
 ├── comparers.py     # Comparison and diff logic
-└── report.py        # HTML report generation
+├── report.py        # HTML report generation
+└── jsondiff.py      # Structured (JSON) diff output
 ```
 
 ## Building as Standalone App

@@ -4,6 +4,36 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-08-03
+
+### Added
+
+- **JSON output for scripting and change tracking** — `--format json` (or
+  `--format both` for the HTML report and JSON side by side). Emits a
+  machine-readable document with a versioned schema: per-category
+  added/removed/modified/unchanged counts, plus a flat change list with one
+  record per changed element and field-level details carrying raw old/new
+  formulas. Unchanged elements are counted but not listed. JSON-only runs
+  never open a browser, so the CLI can run headless in scheduled jobs.
+  `build_diff` is exported from the package for library use.
+- The JSON differ reuses the same change-detection helpers as the HTML
+  report, and the test suite locks both outputs to identical per-category
+  counts so they cannot drift apart.
+- **Nightly sync script** (`scripts/nightly_sync/`) — archives every
+  `.driveprojx` from a network share into a git repo each night (one commit
+  per changed project, authored by the project's owner when configured),
+  records per-category and per-element change rows in a SQLite metrics
+  database, and writes dated HTML/JSON diff reports for drill-down. Unchanged
+  projects produce nothing; new projects are archived without exploding the
+  metrics. Stdlib-only, Windows Task Scheduler-ready, covered by an
+  end-to-end lifecycle test.
+- **Work-metrics dashboard** (`scripts/nightly_sync/dashboard.py`) —
+  regenerated at the end of every sync run: a self-contained static HTML page
+  (inline SVG charts, hover tooltips, light + dark mode, no external
+  resources) with changes-per-day over 60 days, top projects / users /
+  categories over 30 days, and a recent-changes table linking into the dated
+  drill-down reports.
+
 ## [1.0.7] - 2026-06-22
 
 ### Changed
