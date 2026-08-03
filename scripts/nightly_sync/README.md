@@ -43,6 +43,13 @@ to the share for the account that runs the task.
 1. Copy `config.example.json` to `config.json` (anywhere you like) and edit
    it. Use forward slashes in paths — they work fine on Windows, including
    UNC paths (`//SERVER/share/...`), and avoid JSON escaping headaches.
+
+   `exclude` is a list of case-insensitive globs matched against each file's
+   path relative to `source_dir` (posix, `*` spans `/`); a file matching any
+   of them is skipped. Use it to drop archive/backup/duplicate copies so the
+   set that remains has a unique filename per project — the archive keys one
+   top-level folder per project *name*, so two kept files with the same name
+   would collide. `["*archive*", "*/backup/*"]` covers the common cases.
 2. Do a first run by hand and eyeball the log:
 
    ```powershell

@@ -193,6 +193,59 @@ def test_safe_extract_rejects_zip_slip(tmp_path):
         nightly_sync.safe_extract(evil, tmp_path / 'out')
 
 
+def test_duplicate_project_name_is_skipped_not_crash(tmp_path):
+    # Two source files share a stem ("Dup"); the archive can only hold one
+    # project by that name. The run must skip the second with a recorded error
+    # rather than crashing (a bare mkdir would raise FileExistsError).
+    source = tmp_path / 'share'
+    _write_projx(source / 'A' / 'Dup.driveprojx', {'X': '=1'})
+    _write_projx(source / 'B' / 'Dup.driveprojx', {'Y': '=2'})
+    cfg_path = tmp_path / 'config.json'
+    cfg_path.write_text(json.dumps({
+        'source_dir': str(source),
+        'archive_repo': str(tmp_path / 'repo'),
+        'data_dir': str(tmp_path / 'data'),
+    }), encoding='utf-8')
+
+    cfg = nightly_sync.load_config(cfg_path)
+    assert nightly_sync.run(cfg, dry_run=False) == 1  # error exit, but no crash
+
+    # Exactly one 'Dup' archived; the duplicate is flagged in the run errors.
+    assert (tmp_path / 'repo' / 'Dup').is_dir()
+    with sqlite3.connect(tmp_path / 'data' / 'metrics.sqlite') as db:
+        errors = db.execute('SELECT errors FROM runs').fetchone()[0]
+        assert 'duplicate project name "Dup"' in errors
+
+
+def test_find_projects_honours_exclude(tmp_path):
+    for rel in ('Projects/Alpha.driveprojx',
+                'Projects/Alpha/Alpha.driveprojx',
+                'Projects/Beta/Beta.driveprojx',
+                'Projects/Beta/Backup/Beta.driveprojx',
+                '_Archive/OldThing.driveprojx',
+                'DriveWorks Archive Files/Archived Projects/Gamma.driveprojx'):
+        _write_projx(tmp_path / rel, {'X': '=1'})
+
+    # No exclude: every file is found, including the archive/backup/dupes.
+    assert len(nightly_sync.find_projects(tmp_path, True)) == 6
+
+    excluded = []
+    kept = nightly_sync.find_projects(
+        tmp_path, True,
+        ['*archive*', '*/backup/*', 'projects/alpha.driveprojx'],
+        excluded_out=excluded)
+    rels = sorted(p.relative_to(tmp_path).as_posix() for p in kept)
+    # archive folders gone, Backup gone, the loose Alpha dupe gone; the
+    # foldered Alpha and Beta survive with unique stems.
+    assert rels == ['Projects/Alpha/Alpha.driveprojx', 'Projects/Beta/Beta.driveprojx']
+
+    # excluded_out reports each dropped file with the pattern that matched it,
+    # which is what a --dry-run prints for auditing.
+    assert len(excluded) == 4
+    assert ('Projects/Alpha.driveprojx', 'projects/alpha.driveprojx') in excluded
+    assert ('Projects/Beta/Backup/Beta.driveprojx', '*/backup/*') in excluded
+
+
 def test_load_config_rejects_missing_keys(tmp_path):
     p = tmp_path / 'config.json'
     p.write_text('{"source_dir": "x"}', encoding='utf-8')

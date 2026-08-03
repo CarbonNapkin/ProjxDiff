@@ -4,6 +4,25 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-08-03
+
+### Added
+
+- **`exclude` config option for the nightly sync** — a list of case-insensitive
+  globs matched against each project's path relative to `source_dir` (`*`
+  spans `/`); any match is skipped. Lets a deployment drop archive/backup and
+  duplicate copies so the synced set has a unique filename per project, which
+  matters because the archive keys one top-level folder per project *name* —
+  two kept files sharing a name would otherwise collide. Covered by a test.
+
+### Fixed
+
+- **Nightly sync no longer crashes on a duplicate project name.** When two
+  source files shared a filename stem, the per-project staging `mkdir` raised
+  an unhandled `FileExistsError` and killed the entire run. The duplicate is
+  now skipped with a recorded error (visible in the run's `errors` and exit
+  code 1) so every other project still syncs. Covered by a test.
+
 ## [1.1.0] - 2026-08-03
 
 ### Added

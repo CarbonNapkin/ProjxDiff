@@ -25,6 +25,7 @@ See config.example.json and README.md in this folder for setup.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import logging
@@ -56,6 +57,7 @@ REQUIRED_KEYS = ('source_dir', 'archive_repo', 'data_dir')
 
 DEFAULTS = {
     'recursive': True,
+    'exclude': [],
     'git_user_name': 'Projx Sync',
     'git_user_email': 'projx-sync@localhost',
     'push': False,
@@ -80,9 +82,31 @@ def load_config(path: Path) -> dict:
 
 # ------------------------------------------------------------- utilities ----
 
-def find_projects(source_dir: Path, recursive: bool) -> list[Path]:
+def find_projects(source_dir: Path, recursive: bool,
+                  exclude: list[str] = (),
+                  excluded_out: list = None) -> list[Path]:
+    """Every *.driveprojx under source_dir, minus any whose path (relative to
+    source_dir, posix, case-insensitive) matches an `exclude` glob. `*` spans
+    slashes, so "*archive*" drops anything with an archive folder anywhere in
+    its path, and "*/backup/*" drops per-project Backup folders.
+
+    If `excluded_out` is provided, each dropped file is appended to it as a
+    (relative_posix_path, matching_pattern) tuple so the caller can report
+    exactly what was skipped and why."""
     pattern = '**/*.driveprojx' if recursive else '*.driveprojx'
-    return sorted(p for p in source_dir.glob(pattern) if p.is_file())
+    pats = [e.lower() for e in exclude]
+    out = []
+    for p in source_dir.glob(pattern):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(source_dir).as_posix()
+        matched = next((pat for pat in pats if fnmatch.fnmatchcase(rel.lower(), pat)), None)
+        if matched is not None:
+            if excluded_out is not None:
+                excluded_out.append((rel, matched))
+            continue
+        out.append(p)
+    return sorted(out)
 
 
 def copy_with_retries(src: Path, dst: Path) -> None:
@@ -352,8 +376,15 @@ def run(cfg: dict, dry_run: bool) -> int:
         ensure_repo(cfg['archive_repo'], cfg)
         conn = open_db(data_dir / 'metrics.sqlite')
 
-        zips = find_projects(cfg['source_dir'], cfg['recursive'])
-        log.info('found %d project file(s) under %s', len(zips), cfg['source_dir'])
+        excluded = []
+        zips = find_projects(cfg['source_dir'], cfg['recursive'], cfg['exclude'], excluded)
+        log.info('found %d project file(s) under %s (%d excluded by %d pattern(s))',
+                 len(zips), cfg['source_dir'], len(excluded), len(cfg['exclude']))
+        # On a dry run, spell out exactly what was skipped and by which pattern
+        # so the exclude list can be audited before it governs a real sync.
+        if dry_run and excluded:
+            for rel, pat in sorted(excluded):
+                log.info('  excluded: %s  [matched "%s"]', rel, pat)
 
         counts = {'changed': 0, 'new': 0, 'unchanged': 0}
         errors = []
@@ -362,10 +393,20 @@ def run(cfg: dict, dry_run: bool) -> int:
         staging_root = Path(tempfile.mkdtemp(prefix='projx_sync_'))
         try:
             for zip_path in zips:
-                seen.add(zip_path.stem)
-                proj_staging = staging_root / zip_path.stem
-                proj_staging.mkdir()
+                name = zip_path.stem
+                # The archive keys one folder per project name, so two source
+                # files with the same stem cannot both be archived. Skip the
+                # duplicate with a recorded error instead of letting mkdir
+                # crash the whole run; the fix is an exclude pattern.
+                if name in seen:
+                    log.error('[DUPLICATE] %s -- name "%s" already taken this run; '
+                              'skipped (add an exclude to resolve)', zip_path, name)
+                    errors.append(f'{zip_path.name}: duplicate project name "{name}" -- skipped')
+                    continue
+                seen.add(name)
                 try:
+                    proj_staging = staging_root / name
+                    proj_staging.mkdir()
                     outcome = sync_one(zip_path, cfg['archive_repo'], proj_staging,
                                        cfg, run_date, conn, reports_dir, dry_run)
                     counts[outcome] += 1

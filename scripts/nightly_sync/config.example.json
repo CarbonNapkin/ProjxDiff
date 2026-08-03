@@ -3,6 +3,7 @@
   "archive_repo": "C:/ProjxArchive/repo",
   "data_dir": "C:/ProjxArchive/data",
   "recursive": true,
+  "exclude": ["*archive*", "*/backup/*"],
   "git_user_name": "Projx Sync",
   "git_user_email": "projx-sync@base10consultants.com",
   "push": false,
