@@ -1,0 +1,14 @@
+{
+  "source_dir": "//SERVER/DriveWorks/Projects",
+  "archive_repo": "C:/ProjxArchive/repo",
+  "data_dir": "C:/ProjxArchive/data",
+  "recursive": true,
+  "git_user_name": "Projx Sync",
+  "git_user_email": "projx-sync@base10consultants.com",
+  "push": false,
+  "remote": "",
+  "remove_missing": false,
+  "owners": {
+    "Model 630": "Jane Smith <jane@example.com>"
+  }
+}
