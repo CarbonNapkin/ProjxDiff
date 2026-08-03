@@ -30,9 +30,21 @@ the machine that runs it (or point `tool_repo` in the config at one).
 5. Optionally pushes to `remote` if `push` is `true` (a failed push is logged
    but does not fail the sync).
 
-Each changed project is its own commit. If `owners` maps the project name to
-`"Name <email>"`, that becomes the commit author — which makes `git log
---author` a per-user work record.
+Each changed project is its own commit. Its author is resolved in this order:
+
+1. An explicit `owners` entry (`"Project Name": "Name <email>"`) always wins.
+2. Otherwise, if `derive_author_from_file` is `true`, the DriveWorks user who
+   **last saved** the project — read from `DWCurrentUserDisplayName` in the
+   project's `designMaster.xml` — is used, mapped through `author_aliases` to
+   collapse spelling variants (`"TusharShewale"` and `"Tushar"`) onto one
+   `"Name <email>"` identity. A display name with no alias is used as-is
+   (`"Zach <>"`); add it to `author_aliases` to normalize or attach an email.
+3. Otherwise the sync's own committer identity.
+
+This makes `git log --author` a per-user work record with no manual owner
+map to maintain — attribution follows whoever actually saved the project.
+Note it credits the *last* saver, so edits by several people between two runs
+land under one name.
 
 ## Setup (Windows)
 

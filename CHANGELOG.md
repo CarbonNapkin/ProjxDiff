@@ -4,6 +4,19 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-08-03
+
+### Added
+
+- **Automatic per-user attribution from the project file.** With
+  `derive_author_from_file: true`, a changed project's commit is authored by
+  the DriveWorks user who last saved it — read from `DWCurrentUserDisplayName`
+  in `designMaster.xml` — instead of requiring a hand-maintained `owners` map.
+  An `author_aliases` map collapses display-name spelling variants (e.g.
+  `TusharShewale`/`Tushar`) onto one `"Name <email>"` identity; an explicit
+  `owners` entry still overrides. Credits the last saver, so multiple editors
+  between two runs land under one name. Covered by tests.
+
 ## [1.1.1] - 2026-08-03
 
 ### Added

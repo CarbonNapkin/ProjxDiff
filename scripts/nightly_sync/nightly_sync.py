@@ -29,6 +29,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -58,6 +59,8 @@ REQUIRED_KEYS = ('source_dir', 'archive_repo', 'data_dir')
 DEFAULTS = {
     'recursive': True,
     'exclude': [],
+    'derive_author_from_file': False,
+    'author_aliases': {},
     'git_user_name': 'Projx Sync',
     'git_user_email': 'projx-sync@localhost',
     'push': False,
@@ -258,6 +261,48 @@ def record_project_event(conn: sqlite3.Connection, run_date: str, project: str,
         (run_date, project, owner, 'project', project, status))
 
 
+# ---------------------------------------------------------- attribution ----
+
+# DriveWorks writes the user who last saved the project into designMaster.xml
+# as "special variables". DWCurrentUserDisplayName is the human name; the email
+# is often blank, so name is the primary key.
+_DISPLAY_RE = re.compile(r'StoreName="DWCurrentUserDisplayName"\s+Value="([^"]*)"')
+_EMAIL_RE = re.compile(r'StoreName="DWCurrentUserEmailAddress"\s+Value="([^"]*)"')
+
+
+def read_last_saver(project_root: Path) -> tuple[str, str]:
+    """(display_name, email) of the DriveWorks user who last saved the project,
+    read from its designMaster.xml. ('', '') if unavailable."""
+    dm = project_root / 'driveProj' / 'designMaster.xml'
+    if not dm.is_file():
+        return ('', '')
+    text = dm.read_bytes().decode('utf-8', 'replace')
+    d = _DISPLAY_RE.search(text)
+    e = _EMAIL_RE.search(text)
+    return (d.group(1).strip() if d else '',
+            e.group(1).strip() if e else '')
+
+
+def resolve_author(name: str, project_root: Path, cfg: dict) -> str:
+    """Git author ("Name <email>") for a project's change. An explicit
+    `owners` entry always wins (manual override); otherwise, when
+    `derive_author_from_file` is on, use the project's last saver, mapped
+    through `author_aliases` to collapse spelling variants onto one identity.
+    Returns '' to fall back to the sync's own committer identity."""
+    override = cfg['owners'].get(name)
+    if override:
+        return override
+    if not cfg.get('derive_author_from_file'):
+        return ''
+    display, email = read_last_saver(project_root)
+    if not display:
+        return ''
+    alias = cfg['author_aliases'].get(display)
+    if alias:
+        return alias
+    return f'{display} <{email}>' if email else f'{display} <>'
+
+
 # ------------------------------------------------------------------ sync ----
 
 def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
@@ -266,13 +311,16 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     from dw_compare import load_project, generate_html_report, build_diff
 
     name = zip_path.stem
-    owner = cfg['owners'].get(name, '')
 
     local_zip = staging / zip_path.name
     copy_with_retries(zip_path, local_zip)
 
     new_dir = staging / name
     safe_extract(local_zip, new_dir)
+
+    # Attribution comes from the freshly-extracted copy (its last-saver), so a
+    # changed project is credited to whoever most recently saved it.
+    owner = resolve_author(name, new_dir, cfg)
 
     repo_dir = repo / name
     is_new = not repo_dir.is_dir()

@@ -20,13 +20,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts' / 'nightl
 import nightly_sync  # noqa: E402
 
 
-def _write_projx(path: Path, variables: dict):
-    """Build a minimal .driveprojx: a zip holding a TDM-format project.xml."""
+def _write_projx(path: Path, variables: dict, last_saver=None):
+    """Build a minimal .driveprojx: a zip holding a TDM-format project.xml.
+    last_saver=(display_name, email) also embeds a designMaster.xml carrying
+    the DriveWorks last-saved-user special variables."""
     rows = ''.join(f'<Variable DisplayName="{n}" StoreName="{n}" Rule="{v}"/>'
                    for n, v in variables.items())
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, 'w') as zf:
         zf.writestr('driveProj/project.xml', f'<Project><Variables>{rows}</Variables></Project>')
+        if last_saver is not None:
+            disp, email = last_saver
+            zf.writestr('driveProj/designMaster.xml',
+                        '<DesignMaster>'
+                        f'<SpecialVariable StoreName="DWCurrentUserDisplayName" Value="{disp}" />'
+                        f'<SpecialVariable StoreName="DWCurrentUserEmailAddress" Value="{email}" />'
+                        '</DesignMaster>')
 
 
 def _git_log(repo: Path):
@@ -215,6 +224,49 @@ def test_duplicate_project_name_is_skipped_not_crash(tmp_path):
     with sqlite3.connect(tmp_path / 'data' / 'metrics.sqlite') as db:
         errors = db.execute('SELECT errors FROM runs').fetchone()[0]
         assert 'duplicate project name "Dup"' in errors
+
+
+def test_resolve_author_precedence(tmp_path):
+    proj = tmp_path / 'P'
+    _write_projx(tmp_path / 'P.driveprojx', {'X': '=1'},
+                 last_saver=('TusharShewale', ''))
+    # extract so resolve_author can read designMaster.xml
+    nightly_sync.safe_extract(tmp_path / 'P.driveprojx', proj)
+
+    base = {'owners': {}, 'author_aliases': {}, 'derive_author_from_file': False}
+    # derive off -> empty (falls back to committer identity)
+    assert nightly_sync.resolve_author('P', proj, base) == ''
+    # derive on, no alias, no email -> "Display <>"
+    on = {**base, 'derive_author_from_file': True}
+    assert nightly_sync.resolve_author('P', proj, on) == 'TusharShewale <>'
+    # alias collapses the spelling variant onto one identity
+    aliased = {**on, 'author_aliases': {'TusharShewale': 'Tushar Shewale <t@x.com>'}}
+    assert nightly_sync.resolve_author('P', proj, aliased) == 'Tushar Shewale <t@x.com>'
+    # explicit owners entry always wins over the file
+    override = {**aliased, 'owners': {'P': 'Boss <boss@x.com>'}}
+    assert nightly_sync.resolve_author('P', proj, override) == 'Boss <boss@x.com>'
+
+
+def test_author_derived_from_file_end_to_end(tmp_path):
+    source = tmp_path / 'share'
+    _write_projx(source / 'Zeta.driveprojx', {'W': '=1'},
+                 last_saver=('DaveDewey', 'dave@x.com'))
+    cfg_path = tmp_path / 'config.json'
+    cfg_path.write_text(json.dumps({
+        'source_dir': str(source),
+        'archive_repo': str(tmp_path / 'repo'),
+        'data_dir': str(tmp_path / 'data'),
+        'derive_author_from_file': True,
+        'author_aliases': {'DaveDewey': 'Dave Dewey <dave@x.com>'},
+    }), encoding='utf-8')
+
+    cfg = nightly_sync.load_config(cfg_path)
+    assert nightly_sync.run(cfg, dry_run=False) == 0
+    # the first-run "added" commit is authored by the resolved last-saver
+    log = _git_log(tmp_path / 'repo')
+    subject, author = log[0]
+    assert subject == 'Zeta: added to archive'
+    assert author == 'Dave Dewey <dave@x.com>'
 
 
 def test_find_projects_honours_exclude(tmp_path):
