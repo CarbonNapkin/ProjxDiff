@@ -22,6 +22,7 @@ from .models import (
 )
 from .parsers import load_project
 from .report import generate_html_report
+from .jsondiff import build_diff
 
 __all__ = [
     'Variable',
@@ -37,6 +38,7 @@ __all__ = [
     'FormControl',
     'load_project',
     'generate_html_report',
+    'build_diff',
     '__version__',
     '__author__',
     '__url__',

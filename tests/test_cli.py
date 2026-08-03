@@ -56,6 +56,73 @@ def test_main_no_open_skips_browser(tmp_path, monkeypatch):
     assert "url" not in opened  # --no-open must not launch a browser
 
 
+def test_main_format_json_writes_json_and_never_opens_browser(tmp_path, monkeypatch):
+    import json
+
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    out = tmp_path / "diff.json"
+
+    opened = {}
+    monkeypatch.setattr(cli, "check_for_update", lambda *a, **k: None)
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(sys, "argv",
+                        ["dw_compare", str(old_dir), str(new_dir),
+                         "-o", str(out), "--format", "json"])
+
+    cli.main()
+
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["schema"] == 1
+    assert doc["old_project"] == "old" and doc["new_project"] == "new"
+    # JSON-only runs are for scripting; no browser even without --no-open.
+    assert "url" not in opened
+
+
+def test_main_format_json_default_output_name(tmp_path, monkeypatch):
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "check_for_update", lambda *a, **k: None)
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: None)
+    monkeypatch.setattr(sys, "argv",
+                        ["dw_compare", str(old_dir), str(new_dir), "--format", "json"])
+
+    cli.main()
+
+    assert (tmp_path / "dw_comparison.json").exists()
+    assert not (tmp_path / "dw_comparison.html").exists()
+
+
+def test_main_format_both_writes_both_and_opens_html(tmp_path, monkeypatch):
+    import json
+
+    old_dir = tmp_path / "old"
+    new_dir = tmp_path / "new"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    out = tmp_path / "report.html"
+
+    opened = {}
+    monkeypatch.setattr(cli, "check_for_update", lambda *a, **k: None)
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(sys, "argv",
+                        ["dw_compare", str(old_dir), str(new_dir),
+                         "-o", str(out), "--format", "both"])
+
+    cli.main()
+
+    assert "<!DOCTYPE html>" in out.read_text(encoding="utf-8")
+    doc = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert doc["schema"] == 1
+    assert opened["url"] == out.resolve().as_uri()  # the HTML report still opens
+
+
 def test_extract_driveprojx_unzips(tmp_path):
     # A .driveprojx is just a zip; extract_driveprojx should unpack it intact.
     archive = tmp_path / "p.driveprojx"

@@ -178,6 +178,46 @@ def compare_constants(old: dict, new: dict) -> tuple[str, dict]:
     return html, stats
 
 
+def _calc_table_changes(old_tbl, new_tbl) -> list:
+    """Flat list of (column, scope, status, old_val, new_val) covering a
+    row-count change and every per-column difference between two CalcTables.
+    Empty list means the tables are identical. Shared by the HTML renderer
+    and the JSON diff (jsondiff.py) so both agree on what changed."""
+    changes = []
+    if old_tbl.row_count != new_tbl.row_count:
+        changes.append(('(row count)', '', 'modified',
+                        str(old_tbl.row_count), str(new_tbl.row_count)))
+    all_cols = set(old_tbl.columns.keys()) | set(new_tbl.columns.keys())
+
+    for col in sorted(all_cols):
+        old_col = old_tbl.columns.get(col, {'common': '', 'rows': {}})
+        new_col = new_tbl.columns.get(col, {'common': '', 'rows': {}})
+
+        if col not in old_tbl.columns:
+            changes.append((col, 'Common', 'added', '', new_col['common']))
+            for idx in sorted(new_col['rows']):
+                changes.append((col, f'Row {idx}', 'added', '', new_col['rows'][idx]))
+        elif col not in new_tbl.columns:
+            changes.append((col, 'Common', 'removed', old_col['common'], ''))
+            for idx in sorted(old_col['rows']):
+                changes.append((col, f'Row {idx}', 'removed', old_col['rows'][idx], ''))
+        else:
+            if old_col['common'] != new_col['common']:
+                changes.append((col, 'Common', 'modified', old_col['common'], new_col['common']))
+            for idx in sorted(set(old_col['rows']) | set(new_col['rows'])):
+                o = old_col['rows'].get(idx, '')
+                n = new_col['rows'].get(idx, '')
+                if o == n:
+                    continue
+                if not o:
+                    changes.append((col, f'Row {idx}', 'added', '', n))
+                elif not n:
+                    changes.append((col, f'Row {idx}', 'removed', o, ''))
+                else:
+                    changes.append((col, f'Row {idx}', 'modified', o, n))
+    return changes
+
+
 def _calc_row(col: str, scope: str, status: str, old_val: str, new_val: str,
               first_in_group: bool = False) -> str:
     """Emit one row of a calculation-table diff. The Column cell is blanked
@@ -215,47 +255,14 @@ def compare_calc_tables(old: dict, new: dict) -> tuple[str, dict]:
         )
 
     for name in sorted(common):
-        old_tbl, new_tbl = old[name], new[name]
+        changes = _calc_table_changes(old[name], new[name])
         rows_html = []
-        if old_tbl.row_count != new_tbl.row_count:
-            rows_html.append(_calc_row('(row count)', '', 'modified',
-                                       str(old_tbl.row_count), str(new_tbl.row_count),
-                                       first_in_group=True))
-        all_cols = set(old_tbl.columns.keys()) | set(new_tbl.columns.keys())
-
-        for col in sorted(all_cols):
-            old_col = old_tbl.columns.get(col, {'common': '', 'rows': {}})
-            new_col = new_tbl.columns.get(col, {'common': '', 'rows': {}})
-
-            # Buffer this column's rows so we can mark the first row as
-            # group-start without knowing ahead of time which row that is.
-            col_rows = []
-
-            if col not in old_tbl.columns:
-                col_rows.append(('Common', 'added', '', new_col['common']))
-                for idx in sorted(new_col['rows']):
-                    col_rows.append((f'Row {idx}', 'added', '', new_col['rows'][idx]))
-            elif col not in new_tbl.columns:
-                col_rows.append(('Common', 'removed', old_col['common'], ''))
-                for idx in sorted(old_col['rows']):
-                    col_rows.append((f'Row {idx}', 'removed', old_col['rows'][idx], ''))
-            else:
-                if old_col['common'] != new_col['common']:
-                    col_rows.append(('Common', 'modified', old_col['common'], new_col['common']))
-                for idx in sorted(set(old_col['rows']) | set(new_col['rows'])):
-                    o = old_col['rows'].get(idx, '')
-                    n = new_col['rows'].get(idx, '')
-                    if o == n:
-                        continue
-                    if not o:
-                        col_rows.append((f'Row {idx}', 'added', '', n))
-                    elif not n:
-                        col_rows.append((f'Row {idx}', 'removed', o, ''))
-                    else:
-                        col_rows.append((f'Row {idx}', 'modified', o, n))
-
-            for i, (scope, status, old_v, new_v) in enumerate(col_rows):
-                rows_html.append(_calc_row(col, scope, status, old_v, new_v, first_in_group=(i == 0)))
+        # A new column value in the flat change list starts a visual group.
+        prev_col = object()
+        for col, scope, status, old_v, new_v in changes:
+            rows_html.append(_calc_row(col, scope, status, old_v, new_v,
+                                       first_in_group=(col != prev_col)))
+            prev_col = col
 
         if rows_html:
             stats['modified'] += 1
@@ -384,11 +391,12 @@ def _row_at(row: list, idx: int) -> str:
     return row[idx]
 
 
-def _render_lookup_grid(name: str, top_status: str, old_body: str, new_body: str) -> str:
-    """Render one lookup table as a cell-highlighted grid. top_status is the
-    table-level status ('added' / 'removed' / 'modified') used to color the
-    h3 header. The diff between old_body and new_body decides per-cell
-    coloring inside the grid."""
+def _lookup_diff(old_body: str, new_body: str) -> tuple:
+    """Column matching + keyed row diff between two lookup-table CSV bodies.
+    Returns (display_cols, diff_rows, duplicate_keys) where display_cols is
+    [(header, status, old_idx, new_idx)] and diff_rows is
+    [(status, old_row_or_None, new_row_or_None)]. Shared by the HTML grid
+    renderer and the JSON diff (jsondiff.py) so both agree on what changed."""
     old_headers, old_rows = _parse_csv_table(old_body)
     new_headers, new_rows = _parse_csv_table(new_body)
 
@@ -456,6 +464,16 @@ def _render_lookup_grid(name: str, top_status: str, old_body: str, new_body: str
         for key, old_row in zip(old_keys, old_rows):
             if key not in new_by_key:
                 diff_rows.append(('removed', old_row, None))
+
+    return display_cols, diff_rows, duplicate_keys
+
+
+def _render_lookup_grid(name: str, top_status: str, old_body: str, new_body: str) -> str:
+    """Render one lookup table as a cell-highlighted grid. top_status is the
+    table-level status ('added' / 'removed' / 'modified') used to color the
+    h3 header. The diff between old_body and new_body decides per-cell
+    coloring inside the grid."""
+    display_cols, diff_rows, duplicate_keys = _lookup_diff(old_body, new_body)
 
     counts = {'added': 0, 'removed': 0, 'modified': 0, 'unchanged': 0}
     for status, *_ in diff_rows:
@@ -598,24 +616,29 @@ def compare_data_tables(old: dict, new: dict) -> tuple[str, dict]:
     return html, stats
 
 
+def _fmt_nav_target(s) -> str:
+    """Render a nav step's resolved Next/Previous wiring as a compact string.
+    Module-level (not nested in compare_nav_steps) because the JSON diff
+    (jsondiff.py) uses the same rendering to decide what counts as a change."""
+    bits = []
+    if s.next_step_value:
+        bits.append(f'next={s.next_step_value}')
+    if s.next_step_rule and s.next_step_rule != f'"{s.next_step_value}"':
+        bits.append(f'nextRule={s.next_step_rule}')
+    if s.next_macro_value:
+        bits.append(f'nextMacro={s.next_macro_value}')
+    if s.previous_macro_value:
+        bits.append(f'prevMacro={s.previous_macro_value}')
+    return ', '.join(bits)
+
+
 def compare_nav_steps(old: dict, new: dict) -> tuple[str, dict]:
     """Compare navigation steps (the form flow graph)."""
     added, removed, common = compare_dicts(old, new)
     stats = {'added': len(added), 'removed': len(removed), 'modified': 0, 'unchanged': 0}
     rows = []
 
-    def fmt_target(s):
-        # Highlight the resolved Next/Previous wiring as a compact string.
-        bits = []
-        if s.next_step_value:
-            bits.append(f'next={s.next_step_value}')
-        if s.next_step_rule and s.next_step_rule != f'"{s.next_step_value}"':
-            bits.append(f'nextRule={s.next_step_rule}')
-        if s.next_macro_value:
-            bits.append(f'nextMacro={s.next_macro_value}')
-        if s.previous_macro_value:
-            bits.append(f'prevMacro={s.previous_macro_value}')
-        return ', '.join(bits)
+    fmt_target = _fmt_nav_target
 
     for name in sorted(added):
         s = new[name]

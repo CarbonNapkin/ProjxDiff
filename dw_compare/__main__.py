@@ -6,6 +6,7 @@ Projx Diff (DriveWorks project comparison) - CLI Entry Point
 from __future__ import annotations
 
 import sys
+import json
 import argparse
 import webbrowser
 import zipfile
@@ -17,6 +18,7 @@ from pathlib import Path
 from ._version import __version__
 from .parsers import load_project
 from .report import generate_html_report
+from .jsondiff import build_diff
 from .update_check import check_for_update, RELEASES_PAGE
 
 # Track temp dirs for cleanup
@@ -161,8 +163,13 @@ Examples:
                        help='Path to old project folder or .driveprojx file')
     parser.add_argument('new_project', type=Path, nargs='?', 
                        help='Path to new project folder or .driveprojx file')
-    parser.add_argument('-o', '--output', type=Path, default=Path('dw_comparison.html'),
-                       help='Output HTML file (default: dw_comparison.html)')
+    parser.add_argument('-o', '--output', type=Path, default=None,
+                       help='Output file (default: dw_comparison.html / .json). '
+                            'With --format both, the JSON lands next to the HTML '
+                            'with a .json extension.')
+    parser.add_argument('-f', '--format', choices=['html', 'json', 'both'], default='html',
+                       help='Output format: html report, json change data, or both '
+                            '(default: html)')
     parser.add_argument('--no-open', action='store_true',
                        help='Do not auto-open report in browser')
     parser.add_argument('--gui', action='store_true',
@@ -211,12 +218,28 @@ Examples:
     print(f"Loading new project: {new_name}")
     new_proj = load_project(new_folder)
     
-    print("Generating comparison report...")
-    html = generate_html_report(old_proj, new_proj, old_name, new_name)
-    
-    args.output.write_text(html, encoding='utf-8')
-    print(f"✅ Report saved to: {args.output}")
-    
+    if args.output is None:
+        args.output = Path('dw_comparison.json' if args.format == 'json'
+                           else 'dw_comparison.html')
+
+    html_path = None
+    if args.format in ('html', 'both'):
+        html_path = args.output
+        print("Generating comparison report...")
+        html = generate_html_report(old_proj, new_proj, old_name, new_name)
+        html_path.write_text(html, encoding='utf-8')
+        print(f"✅ Report saved to: {html_path}")
+
+    if args.format in ('json', 'both'):
+        json_path = args.output.with_suffix('.json') if args.format == 'both' else args.output
+        print("Building JSON diff...")
+        diff = build_diff(old_proj, new_proj, old_name, new_name)
+        json_path.write_text(json.dumps(diff, indent=2, ensure_ascii=False) + '\n',
+                             encoding='utf-8')
+        s = diff['summary']
+        print(f"✅ JSON diff saved to: {json_path} "
+              f"(+{s['added']} -{s['removed']} ~{s['modified']}, {s['unchanged']} unchanged)")
+
     # Free, fail-silent update check (notify only — never downloads/installs).
     newer = check_for_update()
     if newer:
@@ -224,8 +247,9 @@ Examples:
 
     # Auto-open in browser. Use as_uri() so the file:// URL is well-formed on
     # Windows (drive letters / backslashes) and has spaces percent-encoded.
-    if not args.no_open:
-        webbrowser.open(args.output.resolve().as_uri())
+    # JSON-only runs are for scripting; they never launch a browser.
+    if html_path is not None and not args.no_open:
+        webbrowser.open(html_path.resolve().as_uri())
 
 
 if __name__ == '__main__':
