@@ -4,6 +4,12 @@ A command-line tool to compare two versions of a DriveWorks™ project and gener
 
 > **Prefer a desktop app?** Prebuilt macOS and Windows versions (no Python needed) are free at [base10consultants.com/tools/projx-diff](https://base10consultants.com/tools/projx-diff/).
 
+![Comparison report](docs/screenshots/report.png)
+
+*The nightly sync dashboard — activity trends, per-user attribution, and multi-location tabs (sample data):*
+
+![Work dashboard](docs/screenshots/dashboard.png)
+
 ## Features
 
 - **Direct .driveprojx support** - Pass project files directly, no manual extraction needed
