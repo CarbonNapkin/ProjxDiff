@@ -111,14 +111,24 @@ side by side in one run. JSON-only runs never open a browser.
 
 ## Nightly Archive & Change Tracking
 
-`scripts/nightly_sync/` contains a scheduled-job script that archives every
+The app includes a nightly sync engine (`--sync`) that archives every
 `.driveprojx` on a network share into a git repo each night and records what
 changed — per project, per category, per element — in a SQLite metrics
 database, with per-project HTML/JSON diff reports for drill-down and a
-self-contained static dashboard (trends, top projects/users/categories)
-regenerated after every run. It is site
-infrastructure (run it from Task Scheduler on Windows), not part of the
-packaged app. See [scripts/nightly_sync/README.md](scripts/nightly_sync/README.md).
+self-contained static dashboard (trends, top projects/users/categories, and
+a needs-attention panel) regenerated after every run. Commits are authored
+by each project's last DriveWorks saver; a managed census (`--census`, or
+the GUI's Tools ▸ Manage Nightly Sync) handles new projects, user identity
+mapping (with retroactive metrics healing), and name conflicts.
+
+```bash
+python -m dw_compare --sync config.json [--dry-run]
+python -m dw_compare --census config.json [--map "Raw=Name <email>"] [--track NAME] [--ignore NAME]
+python -m dw_compare --dashboard config.json
+```
+
+See [scripts/nightly_sync/README.md](scripts/nightly_sync/README.md) for
+setup (Windows Task Scheduler) and the config format.
 
 ## Supported File Types
 

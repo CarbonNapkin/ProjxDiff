@@ -4,6 +4,38 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-04
+
+### Added
+
+- **The nightly sync pipeline is now part of the app.** The engine moved into
+  the package (`dw_compare/sync.py`, `census.py`, `dashboard.py`) with new
+  CLI modes — `--sync`, `--census`, `--dashboard` — so a packaged
+  `ProjxDiff.exe` can run the whole pipeline with no Python install. The
+  `scripts/nightly_sync/` scripts remain as back-compat wrappers; existing
+  scheduled tasks keep working unchanged.
+- **Managed census of projects and users** (`data_dir/census.json`).
+  Discovery replaces hand-written config: new projects auto-register as
+  *pending* (they sync immediately — the pipeline never waits on a human)
+  and get a Track/Ignore decision later; every DriveWorks display name ever
+  seen is collected for identity mapping; same-name collisions sync only the
+  registered path and flag the copy. Scans and syncs only ever add entries —
+  a human's mapping or disposition is never overwritten. Legacy
+  `author_aliases` configs are imported automatically.
+- **Needs-attention panel on the dashboard** — pending projects, unmapped
+  users, and name conflicts, with the quiet steady state being no panel at
+  all. The sync log prints the same summary nightly.
+- **Manage Nightly Sync GUI** (Tools menu): triage pending projects and type
+  identities for unmapped users in a form instead of editing JSON.
+- **Retroactive metrics healing**: mapping a user updates all past metrics
+  rows recorded under the raw display name, so per-user charts read as if
+  the mapping had always existed. Git history is deliberately not rewritten —
+  old commits keep the raw name the file carried at the time.
+- Census CLI management: `--census --map "Raw=Name <email>" --track NAME
+  --ignore NAME [--no-scan]`.
+- A project file that moves on the share now follows automatically (the
+  census updates its registered path) instead of archiving a duplicate.
+
 ## [1.1.2] - 2026-08-03
 
 ### Added
