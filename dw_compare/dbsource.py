@@ -121,7 +121,7 @@ class DwDatabase:
         try:
             import pyodbc
         except ImportError:
-            print(f"  ⚠ [{self.label}] pyodbc not installed — ID names will stay as raw GUIDs.")
+            print(f"  [!] [{self.label}] pyodbc not installed -- ID names will stay as raw GUIDs.")
             self._dead = True
             return False
         try:
@@ -130,8 +130,8 @@ class DwDatabase:
             self._conn = conn
             return True
         except Exception as e:
-            print(f"  ⚠ [{self.label}] Could not connect: {e}")
-            print(f"  ⚠ [{self.label}] Continuing with unresolved IDs.")
+            print(f"  [!] [{self.label}] Could not connect: {e}")
+            print(f"  [!] [{self.label}] Continuing with unresolved IDs.")
             self._dead = True
             return False
 
@@ -165,7 +165,7 @@ class DwDatabase:
             cur.close()
             return rows
         except Exception as e:
-            print(f"  ⚠ [{self.label}] Query failed: {e}")
+            print(f"  [!] [{self.label}] Query failed: {e}")
             return []
 
     def lookup(

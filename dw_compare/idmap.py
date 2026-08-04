@@ -52,6 +52,27 @@ ID_SOURCES: dict = {
 }
 
 
+# --------------------------------------------------------------------------
+# Group database schemas differ between DriveWorks releases, so mappings are
+# additionally keyed by DriveWorks MAJOR version ("20", "21", "22", ...).
+# Populate one entry per version actually deployed, from a
+# scripts/db/discover_db.py run against a live group database of that
+# version. Same no-guessing rule as above: absent means unconfirmed.
+# --------------------------------------------------------------------------
+ID_SOURCES_BY_DW_VERSION: dict = {
+    # "22": {"component": IdSource(table="...", id_col="...", name_col="...",
+    #                              enabled=True), ...},
+}
+
+
+def sources_for_version(dw_version: str = '') -> dict:
+    """The ID mapping for a DriveWorks major version ('21', '21.2', 22, ...).
+    Falls back to the default ID_SOURCES when the version is unknown or has
+    no confirmed mapping yet."""
+    key = str(dw_version).split('.')[0].strip()
+    return ID_SOURCES_BY_DW_VERSION.get(key, ID_SOURCES)
+
+
 class IdResolver:
     """Resolves IDs for ONE side of the diff (one project, one database)."""
 

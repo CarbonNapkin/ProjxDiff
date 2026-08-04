@@ -22,10 +22,11 @@ import sys
 import os
 import tempfile
 import zipfile
+from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "dw_compare"))
-import dbsource            # noqa: E402
-import components as C     # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from dw_compare import dbsource            # noqa: E402
+from dw_compare import components as C     # noqa: E402
 
 
 def ids_from_projx(path: str) -> set:
@@ -46,6 +47,9 @@ def main():
                          "the DW_SQL_PASSWORD environment variable")
     ap.add_argument("--projx", required=True, help=".driveprojx to pull test ids from")
     ap.add_argument("--min-hit", type=float, default=0.25, help="min id hit-rate to report a table")
+    ap.add_argument("--dw-version", default="",
+                    help="DriveWorks major version of this group (e.g. 21, 22); "
+                         "keys the pasteable output to idmap.ID_SOURCES_BY_DW_VERSION")
     args = ap.parse_args()
 
     # Never take a password on the command line: it lands in shell history and
@@ -97,10 +101,29 @@ def main():
         print(f"  {rate*100:5.1f}%  {schema}.{table}  ({id_col} -> {name_col})  [{hit} ids]")
 
     rate, schema, table, id_col, name_col, _ = results[0]
-    print("\nPaste into dw_compare/idmap.py ID_SOURCES:\n")
-    print('    "component": IdSource(')
-    print(f'        table="{table}", id_col="{id_col}", name_col="{name_col}",')
-    print(f'        schema="{schema}", enabled=True),')
+    entry = ('    "component": IdSource(\n'
+             f'        table="{table}", id_col="{id_col}", name_col="{name_col}",\n'
+             f'        schema="{schema}", enabled=True),')
+    if args.dw_version:
+        key = str(args.dw_version).split(".")[0].strip()
+        print(f"\nPaste into dw_compare/idmap.py ID_SOURCES_BY_DW_VERSION:\n")
+        print(f'    "{key}": {{')
+        print(entry)
+        print("    },")
+    else:
+        print("\nPaste into dw_compare/idmap.py ID_SOURCES (or pass --dw-version")
+        print("to key it to a DriveWorks release in ID_SOURCES_BY_DW_VERSION):\n")
+        print(entry)
+
+    # Help the operator identify the group's DriveWorks version: list
+    # version-ish tables with a sample row. Purely informational, fail-soft.
+    version_tables = [(s, t) for s, t in db.list_tables()
+                      if "version" in t.lower() or "schema" in t.lower()]
+    if version_tables:
+        print("\nDriveWorks version hints (version/schema tables in this group):")
+        for s, t in version_tables[:6]:
+            cols = [c for c, _dt in db.columns_of(t, schema=s)][:4]
+            print(f"  {s}.{t}  columns: {', '.join(cols) or '?'}")
 
 
 if __name__ == "__main__":

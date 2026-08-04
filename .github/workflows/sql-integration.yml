@@ -1,0 +1,85 @@
+name: SQL integration
+
+# Runs the live SQL connector tests (tests/test_dbsource_live.py) against a
+# matrix of real SQL Server engines. This is the evidence behind "works
+# across SQL Server versions": each leg boots a genuine engine of that
+# version, seeds a synthetic DriveWorks-shaped schema, and exercises chunked
+# lookups, caching, discovery, quoting, and fail-soft auth via ODBC Driver 18.
+#
+# Coverage notes: containers run Developer edition (same engine as
+# Express/Standard) with SQL authentication. Windows integrated auth cannot
+# run in Linux containers — it is exercised on the client's Windows
+# deployment. Azure SQL speaks the same TDS protocol but is not in the matrix.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'dw_compare/dbsource.py'
+      - 'dw_compare/idmap.py'
+      - 'dw_compare/components.py'
+      - 'tests/test_dbsource_live.py'
+      - '.github/workflows/sql-integration.yml'
+
+env:
+  SA_PASSWORD: 'Pr0jx!Diff-CI-only'
+
+jobs:
+  live:
+    name: SQL Server ${{ matrix.mssql }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mssql: ['2017-latest', '2019-latest', '2022-latest']
+
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:${{ matrix.mssql }}
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'Pr0jx!Diff-CI-only'
+          SA_PASSWORD: 'Pr0jx!Diff-CI-only'   # 2017 image uses the old name
+        ports:
+          - 1433:1433
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install ODBC Driver 18 + pyodbc
+        run: |
+          curl -sSL -O "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb"
+          sudo dpkg -i packages-microsoft-prod.deb
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 unixodbc-dev
+          python -m pip install --upgrade pip
+          python -m pip install pyodbc pytest
+
+      - name: Wait for SQL Server
+        run: |
+          python - <<'EOF'
+          import time, sys, pyodbc
+          for attempt in range(45):
+              try:
+                  pyodbc.connect(
+                      'DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost,1433;'
+                      'DATABASE=master;UID=sa;PWD=Pr0jx!Diff-CI-only;'
+                      'Encrypt=no;TrustServerCertificate=yes', timeout=3).close()
+                  print(f'SQL Server up after {attempt * 2}s'); sys.exit(0)
+              except Exception:
+                  time.sleep(2)
+          sys.exit('SQL Server never came up')
+          EOF
+
+      - name: Run live connector tests
+        env:
+          DW_TEST_SQL_SERVER: 'localhost,1433'
+          DW_TEST_SQL_USER: 'sa'
+          DW_SQL_PASSWORD: 'Pr0jx!Diff-CI-only'
+        run: python -m pytest tests/test_dbsource_live.py -v

@@ -21,7 +21,7 @@ import tempfile
 import zipfile
 import shutil
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from dw_compare import components as C  # noqa: E402
 
 
