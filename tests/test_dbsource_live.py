@@ -73,6 +73,18 @@ def seeded_ids():
     cur.executemany('INSERT INTO dbo.CapturedComponents (Id, Name) VALUES (?, ?)', rows)
     cur.executemany('INSERT INTO dbo.[Component Data] ([Component Id], [Display Name]) '
                     'VALUES (?, ?)', rows[:10])
+
+    # GUID-format matrix: the same ids keyed as uniqueidentifier (rejects
+    # dashless strings outright) and as hyphenated-uppercase NVARCHAR.
+    from dw_compare.dbsource import _hyphenated
+    cur.execute('CREATE TABLE dbo.GuidKeyed '
+                '(Id UNIQUEIDENTIFIER PRIMARY KEY, Name NVARCHAR(255) NOT NULL)')
+    cur.execute('CREATE TABLE dbo.HyphenKeyed '
+                '(Id NVARCHAR(64) PRIMARY KEY, Name NVARCHAR(255) NOT NULL)')
+    cur.executemany('INSERT INTO dbo.GuidKeyed (Id, Name) VALUES (?, ?)',
+                    [(_hyphenated(g), n) for g, n in rows[:50]])
+    cur.executemany('INSERT INTO dbo.HyphenKeyed (Id, Name) VALUES (?, ?)',
+                    [(_hyphenated(g).upper(), n) for g, n in rows[:50]])
     cur.close()
     conn.close()
     yield ids
@@ -134,6 +146,20 @@ def test_discovery_finds_the_mapping_table(db):
     hit = [c for c in candidates if c['table'] == 'CapturedComponents']
     assert hit and 'Id' in hit[0]['id_cols'] and 'Name' in hit[0]['name_cols']
     assert len(db.sample('CapturedComponents', 'Id', 'Name', n=5)) == 5
+
+
+def test_dashless_file_ids_resolve_against_uniqueidentifier_column(db, seeded_ids):
+    # THE discovery blocker: project files carry dashless 32-hex ids; group
+    # databases key these tables on uniqueidentifier, which errors on a
+    # dashless string and killed the whole IN() query before the format-
+    # agnostic lookup. Now the hyphenated pass matches.
+    subset = dict(list(seeded_ids.items())[:50])
+    assert db.lookup('GuidKeyed', 'Id', 'Name', list(subset)) == subset
+
+
+def test_dashless_file_ids_resolve_against_hyphenated_nvarchar(db, seeded_ids):
+    subset = dict(list(seeded_ids.items())[:50])
+    assert db.lookup('HyphenKeyed', 'Id', 'Name', list(subset)) == subset
 
 
 def test_bad_credentials_fail_soft_not_raise(seeded_ids):

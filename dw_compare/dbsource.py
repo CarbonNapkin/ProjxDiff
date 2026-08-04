@@ -38,6 +38,22 @@ _DRIVER_CANDIDATES = [
 
 _CHUNK = 500  # max ids per IN() clause
 
+# The files write ids as dashless lowercase 32-hex; databases key the same
+# values as uniqueidentifier (which REQUIRES hyphenated form — a dashless
+# string fails conversion and kills the whole query) or as NVARCHAR in either
+# form. lookup() therefore queries hyphenated first, dashless second, and
+# matches results by normalized value, so callers can pass any format.
+_GUID32 = re.compile(r'^[0-9a-fA-F]{32}$')
+
+
+def _norm_id(s) -> str:
+    return str(s).replace('-', '').strip().lower()
+
+
+def _hyphenated(norm32: str) -> str:
+    return (f'{norm32[0:8]}-{norm32[8:12]}-{norm32[12:16]}-'
+            f'{norm32[16:20]}-{norm32[20:32]}')
+
 
 def _quote_ident(name: str) -> str:
     """Validate then bracket-quote a SQL identifier."""
@@ -154,10 +170,17 @@ class DwDatabase:
     # ---------- querying ----------
 
     def _select(self, sql: str, params: Iterable = ()) -> list:
+        rows = self._try_select(sql, params)
+        return rows if rows is not None else []
+
+    def _try_select(self, sql: str, params: Iterable = ()):
+        """Like _select, but distinguishes failure (None) from no rows ([]) —
+        lookup() uses this to stop retrying query shapes a table's column
+        type can never satisfy."""
         if not sql.lstrip().upper().startswith("SELECT"):
             raise ValueError("DwDatabase issues SELECT statements only.")
         if not self.connect():
-            return []
+            return None
         try:
             cur = self._conn.cursor()
             cur.execute(sql, *params) if params else cur.execute(sql)
@@ -166,7 +189,7 @@ class DwDatabase:
             return rows
         except Exception as e:
             print(f"  [!] [{self.label}] Query failed: {e}")
-            return []
+            return None
 
     def lookup(
         self,
@@ -178,39 +201,75 @@ class DwDatabase:
     ) -> dict:
         """Resolve {id: name} for the given ids. Unknown ids are simply absent.
 
-        Results are cached per (schema, table, id_col, name_col), so repeated
-        calls across sections only query the ids not already seen.
+        GUID-format agnostic: ids may arrive dashless (as the project files
+        write them) or hyphenated (as databases return them); matching is by
+        normalized value, and the returned keys are the ids as the caller
+        passed them. Results are cached (by normalized id) per
+        (schema, table, id_col, name_col), so repeated calls across sections
+        only query the ids not already seen.
         """
-        wanted = {str(i) for i in ids if i}
+        wanted = {str(i).strip() for i in ids if i and str(i).strip()}
         if not wanted:
             return {}
 
         ck = (schema, table, id_col, name_col)
-        cache = self._cache.setdefault(ck, {})
-        todo = sorted(wanted - cache.keys())
-        if not todo:
-            # Filter negative-cached misses (None) here too — "unknown ids are
-            # simply absent" must hold on the fully-cached path as well.
-            # (Caught by the live SQL matrix on all three engine versions.)
-            return {k: cache[k] for k in wanted if cache.get(k)}
+        cache = self._cache.setdefault(ck, {})   # norm(id) -> name or None
+        by_norm: dict = {}
+        for w in wanted:
+            by_norm.setdefault(_norm_id(w), []).append(w)
 
-        t = f"{_quote_ident(schema)}.{_quote_ident(table)}"
-        ic, nc = _quote_ident(id_col), _quote_ident(name_col)
+        todo = sorted(n for n in by_norm if n not in cache)
+        if todo:
+            t = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+            ic, nc = _quote_ident(id_col), _quote_ident(name_col)
+            guids = [n for n in todo if _GUID32.match(n)]
+            other = [by_norm[n][0] for n in todo if not _GUID32.match(n)]
 
-        for i in range(0, len(todo), _CHUNK):
-            chunk = todo[i:i + _CHUNK]
+            # Pass 1: hyphenated form — the ONLY format a uniqueidentifier
+            # column accepts (dashless kills the whole query with a conversion
+            # error), and it also matches hyphenated NVARCHAR storage under
+            # the default case-insensitive collation.
+            self._lookup_chunks(t, ic, nc, ck, 'hyphenated',
+                                [_hyphenated(n) for n in guids], cache)
+            # Pass 2: dashless form for whatever is still unresolved — matches
+            # NVARCHAR that stores bare 32-hex. Skipped for the rest of this
+            # table's lifetime once the column type provably rejects it.
+            still = [n for n in guids if n not in cache]
+            self._lookup_chunks(t, ic, nc, ck, 'dashless', still, cache)
+            if other:
+                self._lookup_chunks(t, ic, nc, ck, 'raw', other, cache)
+
+            # Negative-cache misses so we don't re-query ids this DB lacks.
+            for n in todo:
+                cache.setdefault(n, None)
+
+        return {w: cache[n] for n, ws in by_norm.items() if cache.get(n)
+                for w in ws}
+
+    def _lookup_chunks(self, t: str, ic: str, nc: str, ck, shape: str,
+                       values: list, cache: dict) -> None:
+        """Run chunked IN() queries for one id format ('hyphenated',
+        'dashless', 'raw'), storing results into the cache keyed by
+        normalized id. A format that errors (e.g. dashless strings against a
+        uniqueidentifier column) is remembered and never retried for this
+        table."""
+        if not hasattr(self, '_dead_shapes'):
+            self._dead_shapes = set()
+        if not values or (ck, shape) in self._dead_shapes:
+            return
+        for i in range(0, len(values), _CHUNK):
+            chunk = values[i:i + _CHUNK]
             marks = ",".join("?" * len(chunk))
             sql = f"SELECT {ic}, {nc} FROM {t} WHERE {ic} IN ({marks})"
-            for row in self._select(sql, (chunk,)):
+            rows = self._try_select(sql, (chunk,))
+            if rows is None:
+                self._dead_shapes.add((ck, shape))
+                return
+            for row in rows:
                 if row[0] is None:
                     continue
-                cache[str(row[0]).strip()] = ("" if row[1] is None else str(row[1])).strip()
-
-        # Negative-cache misses so we don't re-query ids this DB simply lacks.
-        for k in todo:
-            cache.setdefault(k, None)
-
-        return {k: v for k, v in ((k, cache.get(k)) for k in wanted) if v}
+                cache[_norm_id(row[0])] = (
+                    "" if row[1] is None else str(row[1])).strip()
 
     # ---------- discovery ----------
     # Used by `--db-explore` to find which tables actually hold the ID -> name

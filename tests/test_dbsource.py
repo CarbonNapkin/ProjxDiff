@@ -66,6 +66,51 @@ def test_close_is_safe_when_never_connected():
     DwDatabase(label="t", server="x", database="y").close()
 
 
+def test_guid_normalisation_helpers():
+    from dw_compare.dbsource import _norm_id, _hyphenated
+    n = _norm_id('DDB7BF22-8057-4E4C-9AF4-C51C4BF4A9AF')
+    assert n == 'ddb7bf2280574e4c9af4c51c4bf4a9af'
+    assert _hyphenated(n) == 'ddb7bf22-8057-4e4c-9af4-c51c4bf4a9af'
+
+
+def test_lookup_matches_dashless_request_to_hyphenated_db(monkeypatch):
+    # The Wade blocker: project files carry dashless 32-hex ids, the database
+    # returns hyphenated-uppercase (as uniqueidentifier does). Matching is by
+    # normalized value and the caller gets back the ids as they passed them.
+    db = DwDatabase(label="t", server="x", database="y")
+    hy = 'DDB7BF22-8057-4E4C-9AF4-C51C4BF4A9AF'
+
+    def fake_try(sql, params=()):
+        vals = list(params[0]) if params else []
+        return [(hy, 'Bracket Sub-Assembly')] if any('-' in v for v in vals) else []
+
+    monkeypatch.setattr(db, '_try_select', fake_try)
+    dashless = 'ddb7bf2280574e4c9af4c51c4bf4a9af'
+    assert db.lookup('T', 'id', 'name', [dashless]) == {dashless: 'Bracket Sub-Assembly'}
+
+
+def test_lookup_stops_retrying_a_rejected_format(monkeypatch):
+    # A uniqueidentifier column errors on dashless strings; after one failure
+    # that format is never tried again for the table (no warning spam, no
+    # wasted round-trips).
+    import uuid
+    db = DwDatabase(label="t", server="x", database="y")
+    calls = []
+
+    def fake_try(sql, params=()):
+        vals = list(params[0]) if params else []
+        calls.append(vals)
+        if vals and '-' not in vals[0]:
+            return None   # conversion error
+        return []
+
+    monkeypatch.setattr(db, '_try_select', fake_try)
+    db.lookup('T', 'id', 'name', [uuid.uuid4().hex])
+    db.lookup('T', 'id', 'name', [uuid.uuid4().hex])
+    dashless_calls = [c for c in calls if c and '-' not in c[0]]
+    assert len(dashless_calls) == 1
+
+
 def test_negative_cached_misses_stay_absent_on_cached_path():
     # REGRESSION (found by the live SQL matrix on 2017/2019/2022 alike): once
     # every wanted id is cached, the early-exit path leaked negative-cached
