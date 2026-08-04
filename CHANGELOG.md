@@ -4,6 +4,14 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Update notices now link to the Projx Diff download page** on
+  base10consultants.com instead of the GitHub releases page. The version
+  check itself still uses the GitHub Releases API.
+
 ## [1.4.0] - 2026-08-04
 
 ### Added
