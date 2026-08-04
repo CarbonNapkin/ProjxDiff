@@ -17,6 +17,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
   config now produces a clear pointer to `--init-config` instead of a
   traceback. These back the upcoming "Add environment group" GUI flow
   (spec in docs/specs/).
+- **Manage Nightly Sync is fully clickable** — Tools ▸ Manage Nightly Sync
+  now opens a chooser (*Open existing config…* / *Create new…*) instead of
+  dead-ending when no config exists; *Create new* asks exactly one question
+  (where should Projx Diff keep its data?) and builds the whole site from
+  it. An *Add environment group…* button — same button for the first group
+  and the fifth — names a group (live slug preview), picks its projects
+  folder, and scans it immediately: discovered projects land in the table
+  as *New* and unseen saver names in the unmapped-users list, ready for
+  triage in the same window without losing in-progress edits. The last-used
+  config is remembered (`~/.projxdiff`), so returning users skip straight
+  to the manager; *Switch config…* gets back to the chooser. The table
+  grows a *Group* column once named groups exist.
+- **One-click nightly scheduling (Windows)** — after the first census save
+  the app offers to register the Task Scheduler job, with the manual
+  `schtasks` command shown as a copyable fallback for servers.
 
 ### Changed
 

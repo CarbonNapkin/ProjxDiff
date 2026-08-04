@@ -7,7 +7,10 @@ comparison without using the command line.
 
 from __future__ import annotations
 
+import json
 import queue
+import re
+import subprocess
 import sys
 import threading
 import traceback
@@ -78,6 +81,77 @@ def _set_window_icon(win) -> None:
             win._icon_ref = img        # keep a reference so Tk doesn't GC it
     except Exception:
         pass
+
+
+# Tiny per-user settings file (remembers e.g. the last-used sync config so
+# Tools > Manage Nightly Sync reopens it without asking again).
+_SETTINGS_PATH = Path.home() / '.projxdiff'
+
+
+def _load_settings() -> dict:
+    try:
+        return json.loads(_SETTINGS_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _save_setting(key: str, value) -> None:
+    settings = _load_settings()
+    settings[key] = value
+    try:
+        _SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + '\n',
+                                  encoding='utf-8')
+    except Exception:
+        pass  # settings are a convenience; never fail an action over them
+
+
+def _load_manager_config(path: Path) -> dict:
+    """load_config, except a site config with no groups yet (fresh Create
+    new… / --init-config) loads as an empty site so the manager can open and
+    offer the first Add-environment-group instead of erroring. load_config
+    itself must stay strict: a *sync* against zero groups is meaningless."""
+    from .sync import DEFAULTS, load_config
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return load_config(path)  # its error messages are written for humans
+    if raw.get('sources') == {} and raw.get('data_dir'):
+        cfg = dict(DEFAULTS)
+        cfg.update(raw)
+        cfg['data_dir'] = Path(cfg['data_dir'])
+        cfg['sources_resolved'] = {}
+        return cfg
+    return load_config(path)
+
+
+def _styled_dialog(parent, title: str, subtitle: str) -> tuple:
+    """Toplevel styled like the rest of the app — dark header bar, light
+    body card. Returns (window, body_frame); the caller packs content into
+    the body and finishes with its own button bar + _center_over."""
+    top = tk.Toplevel(parent)
+    top.title(title)
+    top.resizable(False, False)
+    top.configure(bg=_SM_BG)
+    header = tk.Frame(top, bg=_SM_HEADER_BG)
+    header.pack(fill='x')
+    tk.Label(header, text=title, bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
+             font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=18, pady=(12, 0))
+    tk.Label(header, text=subtitle, bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
+             font=('TkDefaultFont', 9)).pack(anchor='w', padx=18, pady=(1, 12))
+    body = tk.Frame(top, bg=_SM_CARD, highlightbackground=_SM_DIVIDER,
+                    highlightthickness=1, padx=18, pady=14)
+    body.pack(fill='both', expand=True, padx=14, pady=(12, 0))
+    return top, body
+
+
+def _center_over(parent, top) -> None:
+    """Center a dialog over its parent window and make it modal."""
+    top.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() - top.winfo_width()) // 2
+    y = parent.winfo_rooty() + (parent.winfo_height() - top.winfo_height()) // 3
+    top.geometry(f'+{max(0, x)}+{max(0, y)}')
+    top.transient(parent)
+    top.grab_set()
 
 
 class _QueueWriter:
@@ -158,20 +232,7 @@ class CompareApp:
         """Toplevel styled like the rest of the app — dark header bar, light
         body card. Returns (window, body_frame); the caller packs content
         into the body and finishes with _finish_dialog."""
-        top = tk.Toplevel(self.root)
-        top.title(title)
-        top.resizable(False, False)
-        top.configure(bg=_SM_BG)
-        header = tk.Frame(top, bg=_SM_HEADER_BG)
-        header.pack(fill='x')
-        tk.Label(header, text=title, bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
-                 font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=18, pady=(12, 0))
-        tk.Label(header, text=subtitle, bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
-                 font=('TkDefaultFont', 9)).pack(anchor='w', padx=18, pady=(1, 12))
-        body = tk.Frame(top, bg=_SM_CARD, highlightbackground=_SM_DIVIDER,
-                        highlightthickness=1, padx=18, pady=14)
-        body.pack(fill='both', expand=True, padx=14, pady=(12, 0))
-        return top, body
+        return _styled_dialog(self.root, title, subtitle)
 
     def _finish_dialog(self, top) -> None:
         """Accent Close button, centered placement, modal grab."""
@@ -181,12 +242,7 @@ class CompareApp:
                   activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
                   relief='flat', padx=18, pady=4, cursor='hand2',
                   font=('TkDefaultFont', 10, 'bold')).pack(side='right', padx=14)
-        top.update_idletasks()
-        x = self.root.winfo_rootx() + (self.root.winfo_width() - top.winfo_width()) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - top.winfo_height()) // 3
-        top.geometry(f'+{max(0, x)}+{max(0, y)}')
-        top.transient(self.root)
-        top.grab_set()
+        _center_over(self.root, top)
 
     def _show_help(self) -> None:
         """Concise in-app usage help covering both halves of the app: the
@@ -230,27 +286,96 @@ class CompareApp:
         self._finish_dialog(top)
 
     def _manage_sync(self) -> None:
-        """Tools > Manage Nightly Sync: triage the census — decide pending
-        projects' dispositions and map unmapped DriveWorks user names. Saving
-        writes census.json and retroactively heals metrics rows recorded
-        under raw names."""
+        """Tools > Manage Nightly Sync. Returning users go straight to the
+        manager on their remembered config; everyone else gets a chooser:
+        open an existing config or create a new site (one folder question,
+        no JSON authored by humans)."""
+        last = _load_settings().get('last_sync_config', '')
+        if last and Path(last).is_file() and self._open_sync_manager(Path(last), quiet=True):
+            return
+        self._sync_chooser()
+
+    def _sync_chooser(self) -> None:
+        top, body = self._dialog('Manage Nightly Sync',
+                                 'Track your project library automatically')
+
+        tk.Label(body, text='Projx Diff archives every environment group nightly, '
+                            'measures what changed per project and per user, and '
+                            'builds a team dashboard. Everything lives in one '
+                            'folder you pick once.',
+                 bg=_SM_CARD, fg=_SM_TEXT, justify='left', anchor='w',
+                 wraplength=460).pack(fill='x', pady=(0, 14))
+
+        def choice(text, sub, cmd, accent):
+            tk.Button(body, text=text, command=cmd, relief='flat', cursor='hand2',
+                      bg=_SM_ACCENT if accent else '#e6e8ec',
+                      fg='#ffffff' if accent else _SM_TEXT,
+                      activebackground=_SM_ACCENT_ACT if accent else '#dcdfe4',
+                      activeforeground='#ffffff' if accent else _SM_TEXT,
+                      font=('TkDefaultFont', 10, 'bold'),
+                      padx=14, pady=5).pack(fill='x')
+            tk.Label(body, text=sub, bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                     wraplength=460, justify='left').pack(fill='x', pady=(2, 10))
+
+        choice('Create new…',
+               'First time here — pick one folder where Projx Diff keeps its '
+               'config, archives, and dashboard.',
+               lambda: (top.destroy(), self._sync_create_new()), accent=True)
+        choice('Open existing config…',
+               'You already have a config.json from a previous setup or '
+               'another machine.',
+               lambda: (top.destroy(), self._sync_open_existing()), accent=False)
+
+        self._finish_dialog(top)
+
+    def _sync_open_existing(self) -> None:
         cfg_path = filedialog.askopenfilename(
             title='Select the nightly sync config',
             initialdir=_default_config_dir(),
             filetypes=[('Sync config (JSON)', '*.json')])
-        if not cfg_path:
+        if cfg_path:
+            self._open_sync_manager(Path(cfg_path))
+
+    def _sync_create_new(self) -> None:
+        """The one question: where should Projx Diff keep its data? init_site
+        does the rest; the user never meets data_dir or archive_repo."""
+        folder = filedialog.askdirectory(
+            title='Where should Projx Diff keep its data?',
+            initialdir=_default_config_dir(), mustexist=False)
+        if not folder:
             return
+        from .sync import init_site
         try:
-            from .sync import load_config
+            cfg_path = init_site(Path(folder))
+        except SystemExit as e:
+            existing = Path(folder) / 'config.json'
+            if existing.is_file():
+                if messagebox.askyesno('Manage Nightly Sync',
+                                       f'{e}\n\nOpen the existing config instead?'):
+                    self._open_sync_manager(existing)
+            else:
+                messagebox.showerror('Manage Nightly Sync', str(e))
+            return
+        self._open_sync_manager(cfg_path)
+
+    def _open_sync_manager(self, cfg_path: Path, quiet: bool = False) -> bool:
+        """Load a config (tolerating a groupless fresh site) and open the
+        manager; remembers the path for next launch. With quiet=True a load
+        failure just returns False so the caller can fall back to the
+        chooser instead of error-boxing a stale remembered path."""
+        try:
             from . import census as census_mod
-            cfg = load_config(Path(cfg_path))
+            cfg = _load_manager_config(cfg_path)
             cpath = census_mod.census_path(cfg)
             census = census_mod.load_census(cpath)
             census_mod.seed_from_config(census, cfg)
         except (SystemExit, Exception) as e:  # noqa: B014 (SystemExit from config validation)
-            messagebox.showerror('Manage Nightly Sync', f'Could not load config:\n{e}')
-            return
-        _SyncManager(self.root, cfg, cpath, census)
+            if not quiet:
+                messagebox.showerror('Manage Nightly Sync', f'Could not load config:\n{e}')
+            return False
+        _save_setting('last_sync_config', str(cfg_path))
+        _SyncManager(self.root, cfg, cpath, census, config_path=cfg_path, app=self)
+        return True
 
     def _show_about(self) -> None:
         """About window in the app's shared dialog style."""
@@ -557,12 +682,17 @@ class _SyncManager:
     _DISP_COLORS = {'New': _SM_ACCENT, 'Track': '#1b7a3d', 'Ignore': _SM_MUTED}
     _FILTERS = (('All', 'all'), ('New', 'New'), ('Track', 'Track'), ('Ignore', 'Ignore'))
 
-    def __init__(self, parent, cfg: dict, cpath: Path, census: dict):
+    def __init__(self, parent, cfg: dict, cpath: Path, census: dict,
+                 config_path: Path | None = None, app=None):
         from . import census as census_mod
         self._census_mod = census_mod
         self.cfg = cfg
         self.cpath = cpath
         self.census = census
+        # Path of the config itself — needed to add environment groups. None
+        # when a caller has census data but no config file (tests).
+        self.config_path = config_path
+        self._app = app  # owning CompareApp, for Switch config… (optional)
 
         self.top = tk.Toplevel(parent)
         self.top.title('Manage Nightly Sync')
@@ -570,6 +700,14 @@ class _SyncManager:
         self.top.geometry('960x640')
         self.top.minsize(780, 460)
 
+        self._build_all()
+        self.top.transient(parent)
+
+    def _build_all(self) -> None:
+        """Build every section; _reload destroys and calls this again after
+        an environment group is added, so each builder records its outermost
+        frame(s) in self._frames (in pack order)."""
+        self._frames: list = []
         self._build_header()
         self._build_toolbar()
         # Bottom-anchored pieces first so the table (packed last) fills the
@@ -578,19 +716,39 @@ class _SyncManager:
         self._build_users_and_conflicts()
         self._build_table()
 
-        self.top.transient(parent)
+    def _reload(self, cfg: dict, census: dict) -> None:
+        """Swap in freshly scanned config + census and rebuild the window in
+        place. In-progress edits (dispositions set, identities typed) are
+        carried over so adding a group never throws away triage work."""
+        for name, var in self.proj_vars.items():
+            if name in census['projects']:
+                census['projects'][name]['disposition'] = \
+                    self._LABEL_TO_DISP.get(var.get(), 'pending')
+        typed = {raw: e.get().strip() for raw, e in self.user_entries.items()
+                 if e.get().strip()}
+        self.cfg, self.census = cfg, census
+        self.top.unbind_all('<MouseWheel>')  # the old table's wheel binding
+        for f in self._frames:
+            f.destroy()
+        self._build_all()
+        for raw, text in typed.items():
+            if raw in self.user_entries:
+                self.user_entries[raw].insert(0, text)
 
     # ------------------------------------------------------------ sections ----
 
     def _build_header(self) -> None:
         header = tk.Frame(self.top, bg=_SM_HEADER_BG)
         header.pack(side='top', fill='x')
+        self._frames.append(header)
         tk.Label(header, text='Manage Nightly Sync', bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
                  font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=18, pady=(12, 0))
-        # Site configs have several source dirs; legacy has one.
+        # Site configs have several source dirs; legacy has one; a fresh site
+        # has none yet.
         resolved = self.cfg.get('sources_resolved') or {}
         dirs = ', '.join(f'{n}: {s["source_dir"]}' if n else str(s['source_dir'])
-                         for n, s in resolved.items()) or self.cfg.get('source_dir', '')
+                         for n, s in resolved.items()) or self.cfg.get('source_dir', '') \
+            or 'no environment groups yet'
         tk.Label(header, text=f'{dirs}  ·  {self.cpath}',
                  bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
                  font=('TkDefaultFont', 9)).pack(anchor='w', padx=18, pady=(1, 12))
@@ -598,6 +756,7 @@ class _SyncManager:
     def _build_toolbar(self) -> None:
         bar = tk.Frame(self.top, bg=_SM_BG)
         bar.pack(side='top', fill='x', padx=16, pady=(12, 0))
+        self._frames.append(bar)
         tk.Label(bar, text='Filter', bg=_SM_BG, fg=_SM_TEXT).pack(side='left')
         self.filter_var = StringVar()
         entry = tk.Entry(bar, textvariable=self.filter_var, highlightthickness=1,
@@ -610,6 +769,7 @@ class _SyncManager:
         # Disposition segmented filter: All / New / Track / Ignore.
         seg = tk.Frame(self.top, bg=_SM_BG)
         seg.pack(side='top', fill='x', padx=16, pady=(8, 2))
+        self._frames.append(seg)
         tk.Label(seg, text='Show', bg=_SM_BG, fg=_SM_TEXT).pack(side='left', padx=(0, 8))
         self._disp_filter = 'all'
         self._disp_buttons: dict[str, tk.Label] = {}
@@ -624,12 +784,24 @@ class _SyncManager:
     def _build_footer(self) -> None:
         bar = tk.Frame(self.top, bg=_SM_BG)
         bar.pack(side='bottom', fill='x', padx=16, pady=(4, 12))
+        self._frames.append(bar)
         tk.Button(bar, text='Save', command=self._save, bg=_SM_ACCENT, fg='#ffffff',
                   activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
                   relief='flat', font=('TkDefaultFont', 11, 'bold'),
                   padx=20, pady=6, cursor='hand2').pack(side='right')
         tk.Button(bar, text='Cancel', command=self.top.destroy, bg='#e6e8ec',
                   relief='flat', padx=16, pady=6, cursor='hand2').pack(side='right', padx=8)
+        # Group management lives left of Save/Cancel; hidden for callers with
+        # census data but no config file.
+        if self.config_path is not None:
+            tk.Button(bar, text='Add environment group…', command=self._add_group,
+                      bg='#e6e8ec', relief='flat', padx=14, pady=6,
+                      cursor='hand2').pack(side='left')
+        if self._app is not None:
+            tk.Button(bar, text='Switch config…', command=self._switch_config,
+                      bg=_SM_BG, fg=_SM_MUTED, relief='flat', bd=0,
+                      highlightthickness=0, padx=8, pady=6,
+                      cursor='hand2').pack(side='left', padx=(8, 0))
 
     def _source_root(self, key: str) -> Path:
         """Source dir for a census key. Site configs namespace keys as
@@ -646,10 +818,16 @@ class _SyncManager:
         return Path(self.cfg.get('source_dir', ''))
 
     def _build_table(self) -> None:
+        # A Group column appears once the config has named environment groups
+        # (site config); legacy single-source windows keep the original five.
+        self._named = any(self.cfg.get('sources_resolved') or {})
+        self._cols = (('Group',) + self._COLS) if self._named else self._COLS
+        self._col_weight = ((0,) + self._COL_WEIGHT) if self._named else self._COL_WEIGHT
 
         outer = tk.Frame(self.top, bg=_SM_CARD, highlightbackground=_SM_DIVIDER,
                          highlightthickness=1)
         outer.pack(side='top', fill='both', expand=True, padx=16, pady=(4, 6))
+        self._frames.append(outer)
         canvas = tk.Canvas(outer, bg=_SM_CARD, highlightthickness=0)
         vs = tk.Scrollbar(outer, orient='vertical', command=canvas.yview)
         table = tk.Frame(canvas, bg=_SM_CARD)
@@ -668,35 +846,60 @@ class _SyncManager:
         self._table = table
         # Clickable header row (click to sort, click again to reverse) + divider.
         self._header_labels: list = []
-        for col, weight in enumerate(self._COL_WEIGHT):
-            lbl = tk.Label(table, bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
-                           font=('TkDefaultFont', 8, 'bold'), cursor='hand2')
-            lbl.grid(row=0, column=col, sticky='w', padx=10, pady=(10, 4))
-            lbl.bind('<Button-1>', lambda _e, c=col: self._sort_by(c))
-            self._header_labels.append(lbl)
-            table.columnconfigure(col, weight=weight)
-        tk.Frame(table, bg=_SM_DIVIDER, height=1).grid(
-            row=1, column=0, columnspan=len(self._COLS), sticky='ew', padx=6)
+        if self.census['projects']:
+            for col, weight in enumerate(self._col_weight):
+                lbl = tk.Label(table, bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                               font=('TkDefaultFont', 8, 'bold'), cursor='hand2')
+                lbl.grid(row=0, column=col, sticky='w', padx=10, pady=(10, 4))
+                lbl.bind('<Button-1>', lambda _e, c=col: self._sort_by(c))
+                self._header_labels.append(lbl)
+                table.columnconfigure(col, weight=weight)
+            tk.Frame(table, bg=_SM_DIVIDER, height=1).grid(
+                row=1, column=0, columnspan=len(self._cols), sticky='ew', padx=6)
 
         self.proj_vars: dict[str, StringVar] = {}
         self._rows: list = []
         for name in sorted(self.census['projects'].keys()):
             entry = self.census['projects'][name]
             rel = entry.get('path', '')
+            # Census keys are namespaced "<group>/<project>" in site configs.
+            group, title = (name.split('/', 1) if self._named and '/' in name
+                            else ('', name))
             modified, saver = self._file_meta(self._source_root(name) / rel)
             var = StringVar(value=self._DISP_TO_LABEL.get(entry.get('disposition', 'pending'), 'New'))
             self.proj_vars[name] = var
-            cells = [
-                tk.Label(table, text=name, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
+            cells = ([tk.Label(table, text=group, bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                               font=('TkDefaultFont', 9, 'bold'))] if self._named else []) + [
+                tk.Label(table, text=title, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
                          font=('TkDefaultFont', 10, 'bold')),
                 tk.Label(table, text=self._ellipsize(rel, 54), bg=_SM_CARD, fg=_SM_MUTED, anchor='w'),
                 tk.Label(table, text=modified, bg=_SM_CARD, fg=_SM_TEXT, anchor='w'),
                 tk.Label(table, text=saver, bg=_SM_CARD, fg=_SM_TEXT, anchor='w'),
                 self._disposition_menu(table, var),
             ]
-            self._rows.append({'name': name, 'rel': rel, 'modified': modified,
+            self._rows.append({'name': name, 'group': group, 'title': title,
+                               'rel': rel, 'modified': modified,
                                'saver': saver, 'var': var, 'cells': cells,
                                'search': f'{name} {rel} {saver}'.lower()})
+
+        if not self._rows:
+            # Empty state: a fresh site has no groups; a scanned-but-empty
+            # source has no projects. Either way, point at the next action.
+            msg = ('No environment groups yet.\nAdd one — Projx Diff will scan '
+                   'it and list every project here for triage.'
+                   if not (self.cfg.get('sources_resolved') or {})
+                   else 'No projects found in the configured folders yet.')
+            tk.Label(table, text=msg, bg=_SM_CARD, fg=_SM_MUTED, justify='center',
+                     font=('TkDefaultFont', 11)).grid(
+                row=2, column=0, columnspan=len(self._cols), pady=(48, 14))
+            if self.config_path is not None:
+                tk.Button(table, text='Add environment group…', command=self._add_group,
+                          bg=_SM_ACCENT, fg='#ffffff', activebackground=_SM_ACCENT_ACT,
+                          activeforeground='#ffffff', relief='flat',
+                          font=('TkDefaultFont', 10, 'bold'), padx=16, pady=5,
+                          cursor='hand2').grid(row=3, column=0,
+                                               columnspan=len(self._cols), pady=(0, 48))
+            table.columnconfigure(0, weight=1)  # center the empty-state cell
 
         self._sort_col, self._sort_desc = 0, False
         self._render()
@@ -720,6 +923,7 @@ class _SyncManager:
         cm = self._census_mod
         wrap = tk.Frame(self.top, bg=_SM_BG)
         wrap.pack(side='bottom', fill='x', padx=16, pady=(0, 2))
+        self._frames.append(wrap)
 
         self.user_entries: dict[str, tk.Entry] = {}
         unmapped = cm.unmapped_users(self.census)
@@ -787,13 +991,16 @@ class _SyncManager:
         self._render()
 
     def _sort_key(self, row: dict, col: int):
-        if col == 0:
-            return row['name'].lower()
-        if col == 1:
+        field = self._cols[col]
+        if field == 'Group':
+            return (row['group'].lower(), row['title'].lower())
+        if field == 'Project':
+            return row['title'].lower()
+        if field == 'Path':
             return row['rel'].lower()
-        if col == 2:  # missing dates sort to the end
+        if field == 'Modified':  # missing dates sort to the end
             return (row['modified'] == '—', row['modified'])
-        if col == 3:
+        if field == 'Last saved by':
             return (row['saver'] == '—', row['saver'].lower())
         return {'New': 0, 'Track': 1, 'Ignore': 2}.get(row['var'].get(), 0)
 
@@ -828,7 +1035,7 @@ class _SyncManager:
         self._update_count(len(rows), len(self._rows))
         arrow = ' ▼' if self._sort_desc else ' ▲'
         for c, lbl in enumerate(self._header_labels):
-            lbl.configure(text=self._COLS[c].upper() + (arrow if c == self._sort_col else ''))
+            lbl.configure(text=self._cols[c].upper() + (arrow if c == self._sort_col else ''))
 
     def _update_count(self, shown: int, total: int) -> None:
         self.count_label.configure(
@@ -864,7 +1071,193 @@ class _SyncManager:
         if healed:
             summary += f'\n{healed} past metrics row(s) updated with mapped identities.'
         messagebox.showinfo('Manage Nightly Sync', summary)
+        if self._should_offer_schedule():
+            self._offer_schedule()
         self.top.destroy()
+
+    # ------------------------------------------------- environment groups ----
+
+    def _apply_add_group(self, name: str, folder: str) -> tuple:
+        """Engine work behind the add-group dialog: add the source to the
+        config, census-scan every source (no archiving), persist the
+        discoveries, and rebuild the window. Raises SystemExit with a
+        human-readable message on any problem. Returns (slug, scan summary)."""
+        from .sync import add_source, load_config, find_projects
+        cm = self._census_mod
+        slug = add_source(self.config_path, name, folder)
+        cfg = load_config(self.config_path)
+        cpath = cm.census_path(cfg)
+        census = cm.load_census(cpath)
+        cm.seed_from_config(census, cfg)
+        summary = cm.scan(cfg, census, find_projects)
+        cm.save_census(cpath, census)  # discoveries survive even if the user closes now
+        self.cpath = cpath
+        self._reload(cfg, census)
+        return slug, summary
+
+    def _add_group(self) -> None:
+        """Dialog: group name + projects folder. On OK the group is added and
+        scanned immediately — discovered projects land in the table as New
+        and unseen saver names in the unmapped-users section, ready for
+        triage in this same window."""
+        from .sync import slug_source_name
+        top, body = _styled_dialog(self.top, 'Add Environment Group',
+                                   'A folder of projects to track — prod, staging, a plant…')
+        name_var, dir_var = StringVar(), StringVar()
+
+        grid = tk.Frame(body, bg=_SM_CARD)
+        grid.pack(fill='x')
+        tk.Label(grid, text='Name', bg=_SM_CARD, fg=_SM_TEXT,
+                 anchor='w').grid(row=0, column=0, sticky='w', pady=4)
+        name_entry = tk.Entry(grid, textvariable=name_var, highlightthickness=1,
+                              highlightcolor=_SM_ACCENT, relief='solid', bd=1)
+        name_entry.grid(row=0, column=1, sticky='ew', padx=(10, 0), pady=4)
+        slug_lbl = tk.Label(grid, text='', bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                            font=('TkDefaultFont', 9))
+        slug_lbl.grid(row=1, column=1, columnspan=2, sticky='w', padx=(10, 0))
+
+        def _preview(*_a):
+            name = name_var.get().strip()
+            if not name:
+                slug_lbl.configure(text='Group names are permanent — pick something boring.')
+                return
+            try:
+                slug = slug_source_name(name)
+            except SystemExit:
+                slug_lbl.configure(text='Needs at least one letter or digit.')
+                return
+            note = f'Saved as "{slug}" — permanent, so pick something boring.'
+            slug_lbl.configure(text=note if slug != name else
+                               'Group names are permanent — pick something boring.')
+        name_var.trace_add('write', _preview)
+        _preview()
+
+        tk.Label(grid, text='Projects folder', bg=_SM_CARD, fg=_SM_TEXT,
+                 anchor='w').grid(row=2, column=0, sticky='w', pady=(10, 4))
+        dir_entry = tk.Entry(grid, textvariable=dir_var, highlightthickness=1,
+                             highlightcolor=_SM_ACCENT, relief='solid', bd=1, width=38)
+        dir_entry.grid(row=2, column=1, sticky='ew', padx=(10, 0), pady=(10, 4))
+
+        def _browse():
+            folder = filedialog.askdirectory(
+                title='Folder containing .driveprojx projects', parent=top)
+            if folder:
+                dir_var.set(folder)
+                dir_entry.xview_moveto(1.0)
+        tk.Button(grid, text='Browse…', command=_browse, bg='#e6e8ec', relief='flat',
+                  padx=10, pady=2, cursor='hand2').grid(row=2, column=2,
+                                                        padx=(8, 0), pady=(10, 4))
+        grid.columnconfigure(1, weight=1)
+
+        def _ok():
+            folder = dir_var.get().strip()
+            if not folder:
+                messagebox.showerror('Add Environment Group',
+                                     'Pick the projects folder first.', parent=top)
+                return
+            try:
+                slug, summary = self._apply_add_group(name_var.get(), folder)
+            except SystemExit as e:  # engine messages are written for humans
+                messagebox.showerror('Add Environment Group', str(e), parent=top)
+                return
+            top.destroy()
+            messagebox.showinfo(
+                'Add Environment Group',
+                f'Group "{slug}" added and scanned.\n'
+                f'{len(summary["pending"])} project(s) pending disposition · '
+                f'{len(summary["unmapped"])} unmapped user(s).',
+                parent=self.top)
+
+        bar = tk.Frame(top, bg=_SM_BG)
+        bar.pack(fill='x', pady=(8, 12))
+        tk.Button(bar, text='Add group', command=_ok, bg=_SM_ACCENT, fg='#ffffff',
+                  activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
+                  relief='flat', padx=18, pady=4, cursor='hand2',
+                  font=('TkDefaultFont', 10, 'bold')).pack(side='right', padx=14)
+        tk.Button(bar, text='Cancel', command=top.destroy, bg='#e6e8ec',
+                  relief='flat', padx=14, pady=4, cursor='hand2').pack(side='right')
+        _center_over(self.top, top)
+        name_entry.focus_set()
+
+    def _switch_config(self) -> None:
+        """Close this manager and reopen the chooser (the remembered config
+        otherwise skips it forever)."""
+        self.top.destroy()
+        self._app._sync_chooser()
+
+    # ------------------------------------------------------- scheduling ----
+
+    def _sync_command(self) -> str:
+        """Command line for the nightly scheduled task. Frozen builds invoke
+        the installed exe directly; dev runs go through the interpreter."""
+        if getattr(sys, 'frozen', False):
+            return f'"{sys.executable}" --sync "{self.config_path}"'
+        return f'"{sys.executable}" -m dw_compare --sync "{self.config_path}"'
+
+    def _should_offer_schedule(self) -> bool:
+        """Offer Task Scheduler registration after the first save of each
+        config — Windows only; elsewhere the nightly run is cron territory."""
+        if sys.platform != 'win32' or self.config_path is None:
+            return False
+        return str(self.config_path) not in _load_settings().get('schedule_offered', [])
+
+    def _offer_schedule(self) -> None:
+        offered = _load_settings().get('schedule_offered', [])
+        _save_setting('schedule_offered', offered + [str(self.config_path)])
+
+        top, body = _styled_dialog(self.top, 'Run Nightly',
+                                   'Register a Windows scheduled task for the sync')
+        row = tk.Frame(body, bg=_SM_CARD)
+        row.pack(fill='x')
+        tk.Label(row, text='Run nightly at', bg=_SM_CARD, fg=_SM_TEXT).pack(side='left')
+        time_var = StringVar(value='02:00')
+        tk.Entry(row, textvariable=time_var, width=6, justify='center',
+                 highlightthickness=1, highlightcolor=_SM_ACCENT, relief='solid',
+                 bd=1).pack(side='left', padx=8)
+        status = tk.Label(body, text='', bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                          wraplength=460, justify='left')
+
+        def _register():
+            t = time_var.get().strip()
+            if not re.fullmatch(r'[0-2]?\d:[0-5]\d', t):
+                status.configure(text='Time must be HH:MM (24-hour).', fg='#c0392b')
+                return
+            try:
+                proc = subprocess.run(
+                    ['schtasks', '/Create', '/F', '/SC', 'DAILY',
+                     '/TN', 'ProjxDiff Nightly Sync', '/ST', t,
+                     '/TR', self._sync_command()],
+                    capture_output=True, text=True)
+            except OSError as e:
+                status.configure(text=f'Could not run schtasks: {e}', fg='#c0392b')
+                return
+            if proc.returncode == 0:
+                status.configure(text=f'Registered — runs nightly at {t}.', fg='#1b7a3d')
+            else:
+                status.configure(text=(proc.stderr or proc.stdout or 'schtasks failed').strip(),
+                                 fg='#c0392b')
+
+        tk.Button(row, text='Register scheduled task', command=_register,
+                  bg=_SM_ACCENT, fg='#ffffff', activebackground=_SM_ACCENT_ACT,
+                  activeforeground='#ffffff', relief='flat', padx=14, pady=3,
+                  cursor='hand2', font=('TkDefaultFont', 10, 'bold')).pack(
+            side='left', padx=(8, 0))
+        status.pack(fill='x', pady=(8, 0))
+
+        tk.Label(body, text='Or register it yourself (e.g. on a server):',
+                 bg=_SM_CARD, fg=_SM_MUTED, anchor='w').pack(fill='x', pady=(12, 2))
+        manual = tk.Entry(body, highlightthickness=1, relief='solid', bd=1)
+        manual.insert(0, 'schtasks /Create /SC DAILY /TN "ProjxDiff Nightly Sync" '
+                         f'/ST 02:00 /TR {self._sync_command()}')
+        manual.configure(state='readonly')
+        manual.pack(fill='x')
+
+        bar = tk.Frame(top, bg=_SM_BG)
+        bar.pack(fill='x', pady=(8, 12))
+        tk.Button(bar, text='Close', command=top.destroy, bg='#e6e8ec',
+                  relief='flat', padx=14, pady=4, cursor='hand2').pack(side='right', padx=14)
+        _center_over(self.top, top)
+        self.top.wait_window(top)
 
 
 def main() -> None:

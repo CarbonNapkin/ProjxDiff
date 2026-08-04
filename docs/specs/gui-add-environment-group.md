@@ -1,5 +1,8 @@
 # Spec: "Add environment group" flow in Manage Nightly Sync
 
+**Status: implemented** (gui.py, tests/test_gui_sync_setup.py) — kept for
+rationale; the flow description below matches what shipped.
+
 **For:** the GUI session. **Engine support:** already on `main` (pull first).
 Goal: make sync setup fully clickable — no human ever authors config JSON.
 
