@@ -10,11 +10,5 @@
   "remote": "",
   "remove_missing": false,
   "derive_author_from_file": true,
-  "author_aliases": {
-    "JaneS": "Jane Smith <jane@example.com>",
-    "Jane": "Jane Smith <jane@example.com>"
-  },
-  "owners": {
-    "Model 630": "Jane Smith <jane@example.com>"
-  }
+  "owners": {}
 }

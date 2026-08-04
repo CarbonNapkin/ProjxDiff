@@ -174,6 +174,23 @@ Examples:
                        help='Do not auto-open report in browser')
     parser.add_argument('--gui', action='store_true',
                        help='Launch the graphical UI instead of running on the command line')
+    parser.add_argument('--sync', type=Path, metavar='CONFIG',
+                       help='Run the nightly archive sync with the given config JSON')
+    parser.add_argument('--census', type=Path, metavar='CONFIG',
+                       help='Scan projects/users into the sync census; combine with '
+                            '--map/--track/--ignore to manage dispositions')
+    parser.add_argument('--dashboard', type=Path, metavar='CONFIG',
+                       help='Regenerate the work-metrics dashboard for the given config')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='(with --sync) report changes without committing or recording')
+    parser.add_argument('--map', action='append', default=[], metavar='RAW=IDENTITY',
+                       help='(with --census) map a display name to "Name <email>"')
+    parser.add_argument('--track', action='append', default=[], metavar='PROJECT',
+                       help='(with --census) set a project disposition to track')
+    parser.add_argument('--ignore', action='append', default=[], metavar='PROJECT',
+                       help='(with --census) set a project disposition to ignore')
+    parser.add_argument('--no-scan', action='store_true',
+                       help='(with --census) apply edits only; skip the share scan')
     parser.add_argument('-V', '--version', action='version',
                        version=f'Projx Diff {__version__}')
 
@@ -183,6 +200,27 @@ Examples:
         from .gui import main as gui_main
         gui_main()
         return
+
+    if args.sync:
+        from .sync import main as sync_main
+        sys.exit(sync_main([str(args.sync)] + (['--dry-run'] if args.dry_run else [])))
+
+    if args.census:
+        from .census import main as census_main
+        argv = [str(args.census)]
+        for m in args.map:
+            argv += ['--map', m]
+        for t in args.track:
+            argv += ['--track', t]
+        for i in args.ignore:
+            argv += ['--ignore', i]
+        if args.no_scan:
+            argv += ['--no-scan']
+        sys.exit(census_main(argv))
+
+    if args.dashboard:
+        from .dashboard import main as dashboard_main
+        sys.exit(dashboard_main([str(args.dashboard)]))
     
     # Auto-detect projects if not provided
     if args.old_project is None or args.new_project is None:

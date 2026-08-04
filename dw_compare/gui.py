@@ -95,6 +95,10 @@ class CompareApp:
                                   command=self._apply_log_visibility)
         menubar.add_cascade(label='View', menu=view_menu)
 
+        tools_menu = tk.Menu(menubar, tearoff=False)
+        tools_menu.add_command(label='Manage Nightly Sync…', command=self._manage_sync)
+        menubar.add_cascade(label='Tools', menu=tools_menu)
+
         help_menu = tk.Menu(menubar, tearoff=False, name='help')
         help_menu.add_command(label='How to Use', command=self._show_help)
         help_menu.add_separator()
@@ -140,6 +144,28 @@ class CompareApp:
         top.geometry(f'+{max(0, x)}+{max(0, y)}')
         top.transient(self.root)
         top.grab_set()
+
+    def _manage_sync(self) -> None:
+        """Tools > Manage Nightly Sync: triage the census — decide pending
+        projects' dispositions and map unmapped DriveWorks user names. Saving
+        writes census.json and retroactively heals metrics rows recorded
+        under raw names."""
+        cfg_path = filedialog.askopenfilename(
+            title='Select the nightly sync config',
+            filetypes=[('Sync config (JSON)', '*.json')])
+        if not cfg_path:
+            return
+        try:
+            from .sync import load_config
+            from . import census as census_mod
+            cfg = load_config(Path(cfg_path))
+            cpath = census_mod.census_path(cfg)
+            census = census_mod.load_census(cpath)
+            census_mod.seed_from_config(census, cfg)
+        except (SystemExit, Exception) as e:  # noqa: B014 (SystemExit from config validation)
+            messagebox.showerror('Manage Nightly Sync', f'Could not load config:\n{e}')
+            return
+        _SyncManager(self.root, cfg, cpath, census)
 
     def _show_about(self) -> None:
         """Custom About window. messagebox.showinfo works but a Toplevel
@@ -426,6 +452,134 @@ class CompareApp:
     def _show_update(self, newer: str) -> None:
         self.update_label.configure(text=f'⬆ Update available: v{newer} — click to download')
         self.update_label.bind('<Button-1>', lambda _e: webbrowser.open(RELEASES_PAGE))
+
+
+class _SyncManager:
+    """Toplevel that renders the census triage: pending projects get a
+    Track / Ignore decision, unmapped users get an identity field, and name
+    conflicts are listed with a hint. Saving persists census.json and heals
+    the metrics DB."""
+
+    def __init__(self, parent, cfg: dict, cpath: Path, census: dict):
+        from . import census as census_mod
+        self._census_mod = census_mod
+        self.cfg = cfg
+        self.cpath = cpath
+        self.census = census
+
+        bg = '#f4f4f4'
+        self.top = tk.Toplevel(parent)
+        self.top.title('Manage Nightly Sync')
+        self.top.configure(bg=bg)
+        self.top.geometry('640x520')
+
+        # Scrollable body: a canvas hosting a frame, so long triage lists work.
+        canvas = tk.Canvas(self.top, bg=bg, highlightthickness=0)
+        scroll = tk.Scrollbar(self.top, orient='vertical', command=canvas.yview)
+        body = tk.Frame(canvas, bg=bg, padx=14, pady=10)
+        body.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=body, anchor='nw')
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+
+        def heading(text):
+            tk.Label(body, text=text, bg=bg, font=('TkDefaultFont', 12, 'bold'),
+                     anchor='w').pack(fill='x', pady=(10, 2))
+
+        def note(text):
+            tk.Label(body, text=text, bg=bg, fg='#777', justify='left',
+                     anchor='w', wraplength=560).pack(fill='x')
+
+        self.proj_vars: dict[str, StringVar] = {}
+        pending = census_mod.pending_projects(census)
+        heading(f'New projects awaiting disposition ({len(pending)})')
+        if pending:
+            note('Track = archive and measure nightly. Ignore = stop syncing '
+                 '(history already captured is kept).')
+            for name, path in pending:
+                row = tk.Frame(body, bg=bg)
+                row.pack(fill='x', pady=2)
+                var = StringVar(value='pending')
+                self.proj_vars[name] = var
+                tk.Label(row, text=name, bg=bg, width=24, anchor='w',
+                         font=('TkDefaultFont', 11, 'bold')).pack(side='left')
+                for label, val in (('Decide later', 'pending'), ('Track', 'track'),
+                                   ('Ignore', 'ignore')):
+                    tk.Radiobutton(row, text=label, value=val, variable=var,
+                                   bg=bg, highlightthickness=0).pack(side='left')
+                tk.Label(body, text=path, bg=bg, fg='#999', anchor='w').pack(fill='x')
+        else:
+            note('None — every project has a disposition.')
+
+        self.user_entries: dict[str, tk.Entry] = {}
+        unmapped = census_mod.unmapped_users(census)
+        heading(f'Unmapped DriveWorks users ({len(unmapped)})')
+        if unmapped:
+            note('Fill in as  Name <email>  — past metrics recorded under the '
+                 'raw name are updated too.')
+            for raw in unmapped:
+                row = tk.Frame(body, bg=bg)
+                row.pack(fill='x', pady=2)
+                tk.Label(row, text=raw, bg=bg, width=24, anchor='w',
+                         font=('TkDefaultFont', 11, 'bold')).pack(side='left')
+                e = tk.Entry(row, highlightthickness=1, relief='solid', bd=1)
+                e.pack(side='left', fill='x', expand=True)
+                self.user_entries[raw] = e
+        else:
+            note('None — every user name seen so far is mapped.')
+
+        conflicts = census.get('conflicts', [])
+        if conflicts:
+            heading(f'Name conflicts ({len(conflicts)})')
+            note('Two source files share a project name; only the registered '
+                 'path syncs. Fix the share (rename/remove the copy) or add '
+                 'an exclude pattern in the config.')
+            for c in conflicts:
+                tk.Label(body, text=f'{c.get("project", "")}: {c.get("path", "")}  '
+                                    f'(registered: {c.get("registered", "")})',
+                         bg=bg, fg='#999', anchor='w', wraplength=560,
+                         justify='left').pack(fill='x')
+
+        bar = tk.Frame(self.top, bg=bg, pady=8)
+        bar.pack(side='bottom', fill='x')
+        tk.Button(bar, text='Cancel', command=self.top.destroy).pack(side='right', padx=8)
+        tk.Button(bar, text='Save', font=('TkDefaultFont', 12, 'bold'),
+                  command=self._save).pack(side='right')
+
+        self.top.transient(parent)
+
+    def _save(self) -> None:
+        census_mod = self._census_mod
+        for name, var in self.proj_vars.items():
+            self.census['projects'][name]['disposition'] = var.get()
+        mapped = 0
+        for raw, entry in self.user_entries.items():
+            ident = entry.get().strip()
+            if ident:
+                self.census['users'][raw] = ident
+                mapped += 1
+
+        try:
+            census_mod.save_census(self.cpath, self.census)
+            healed = 0
+            db_path = Path(self.cfg['data_dir']) / 'metrics.sqlite'
+            if mapped and db_path.is_file():
+                import sqlite3
+                conn = sqlite3.connect(db_path, isolation_level=None)
+                try:
+                    healed = census_mod.heal_metrics(conn, self.census)
+                finally:
+                    conn.close()
+        except Exception as e:
+            messagebox.showerror('Manage Nightly Sync', f'Save failed:\n{e}')
+            return
+
+        summary = f'Census saved to {self.cpath}.'
+        if healed:
+            summary += f'\n{healed} past metrics row(s) updated with mapped identities.'
+        messagebox.showinfo('Manage Nightly Sync', summary)
+        self.top.destroy()
 
 
 def main() -> None:

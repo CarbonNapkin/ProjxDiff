@@ -3,119 +3,127 @@
 Archives every `.driveprojx` from a network share into a git repo each night
 and records what changed — per project, per category, per element — in a
 SQLite metrics database, with per-project HTML/JSON diff reports for
-drill-down.
+drill-down and a self-contained dashboard regenerated after every run.
 
-This is site infrastructure, not part of the shipped Projx Diff app. It
-imports `dw_compare` from this repository, so keep a checkout of the repo on
-the machine that runs it (or point `tool_repo` in the config at one).
+As of v1.2.0 the engine lives **inside the app** (`dw_compare/sync.py` et
+al.); the scripts in this folder are thin back-compat wrappers so existing
+scheduled tasks keep working. New setups invoke the app directly:
+
+```powershell
+py -3 -m dw_compare --sync C:\ProjxArchive\config.json [--dry-run]
+py -3 -m dw_compare --census C:\ProjxArchive\config.json
+py -3 -m dw_compare --dashboard C:\ProjxArchive\config.json
+```
+
+A packaged build works too (`ProjxDiff.exe --sync config.json`) — note the
+exe is windowed, so there is no console output; everything goes to
+`data_dir\sync.log` and the exit code still reaches Task Scheduler.
 
 ## What one run does
 
-1. Finds every `*.driveprojx` under `source_dir` (recursively by default).
-2. Copies each to local staging (3 attempts, 10s apart, so a project open in
-   DriveWorks or a share hiccup doesn't kill the run) and extracts it.
-3. Compares extracted content (by file hash) against the archive repo:
+1. Finds every `*.driveprojx` under `source_dir` (recursively by default),
+   minus `exclude` glob matches.
+2. Applies the **census** (see below): ignored projects are skipped; new
+   projects are auto-registered as *pending* and sync normally; same-name
+   collisions sync only the registered path and flag the other file.
+3. Copies each file to local staging (3 attempts, 10s apart) and extracts it.
+4. Compares extracted content (by file hash) against the archive repo:
    - **Unchanged** — nothing happens. No commit, no rows, no reports.
    - **New** — added to the archive with a `<name>: added to archive` commit
-     and a single project-level "added" event. It is *not* diffed against
-     nothing — that would count every element as "added" and poison the work
-     metrics with a one-time explosion.
-   - **Changed** — a semantic diff (previous vs. current) is built with
-     `dw_compare`; the HTML + JSON reports land in
-     `data_dir/reports/<date>/<name>.{html,json}`; per-category counts and
-     per-element change rows are inserted into `data_dir/metrics.sqlite`; the
-     new state is committed as `<name>: +A -R ~M (nightly sync <date>)`.
-4. Projects that vanished from the share get a project-level "removed" event.
-   They stay in the archive unless `remove_missing` is `true`.
-5. Optionally pushes to `remote` if `push` is `true` (a failed push is logged
-   but does not fail the sync).
+     and a single project-level "added" event (never diffed against nothing,
+     which would poison the metrics).
+   - **Changed** — a semantic diff is built; HTML + JSON reports land in
+     `data_dir/reports/<date>/`; per-category counts and per-element rows are
+     inserted into `data_dir/metrics.sqlite`; the new state is committed as
+     `<name>: +A -R ~M (nightly sync <date>)`.
+5. Projects that vanished from the share get a one-time project-level
+   "removed" event; they stay in the archive unless `remove_missing` is true.
+6. The dashboard is regenerated; `push: true` pushes the archive to `remote`.
 
-Each changed project is its own commit. Its author is resolved in this order:
+## The census (projects & users, managed not hand-written)
 
-1. An explicit `owners` entry (`"Project Name": "Name <email>"`) always wins.
-2. Otherwise, if `derive_author_from_file` is `true`, the DriveWorks user who
-   **last saved** the project — read from `DWCurrentUserDisplayName` in the
-   project's `designMaster.xml` — is used, mapped through `author_aliases` to
-   collapse spelling variants (`"TusharShewale"` and `"Tushar"`) onto one
-   `"Name <email>"` identity. A display name with no alias is used as-is
-   (`"Zach <>"`); add it to `author_aliases` to normalize or attach an email.
-3. Otherwise the sync's own committer identity.
+`data_dir/census.json` (override with config key `census_path`) is generated
+by scanning and curated by a human — the sync only ever *adds* entries:
 
-This makes `git log --author` a per-user work record with no manual owner
-map to maintain — attribution follows whoever actually saved the project.
-Note it credits the *last* saver, so edits by several people between two runs
-land under one name.
+- **`projects`** — every project name, its source path, and a disposition:
+  `pending` (newly discovered, syncs normally, awaiting review), `track`, or
+  `ignore` (stop syncing; captured history is kept). A project whose file
+  moved is followed automatically; two files sharing a name become a flagged
+  conflict, and only the registered path syncs.
+- **`users`** — every DriveWorks display name ever seen (read from each
+  project's `DWCurrentUserDisplayName`, written on save), mapped to
+  `"Name <email>"` — or `null` while unmapped.
+
+Anything unresolved — pending projects, unmapped users, conflicts — appears
+in the sync log and in the dashboard's **Needs attention** panel. Resolve it:
+
+- **In the app:** Projx Diff ▸ Tools ▸ Manage Nightly Sync — pick the config,
+  decide Track/Ignore per pending project, type identities for unmapped
+  users, save.
+- **From the command line:**
+
+  ```powershell
+  py -3 -m dw_compare --census C:\ProjxArchive\config.json ^
+    --map "Zach=Zach Miller <zach@example.com>" --track "Model 630" --ignore "Old Test Rig"
+  ```
+
+  (`--no-scan` applies edits without re-walking the share.)
+
+**Attribution** (with `derive_author_from_file: true`): each changed
+project's commit is authored by its last saver, resolved as explicit
+`owners` entry → census users map → legacy `author_aliases` → the raw
+display name. Unmapped names are recorded raw in the metrics; **mapping a
+user retroactively heals those rows**, so per-user charts read as if the
+mapping always existed. Git history is deliberately not rewritten — old
+commits keep the raw name the file carried. Note attribution credits the
+*last* saver; several editors between two runs land under one name.
 
 ## Setup (Windows)
 
-Requirements: Python 3.10+ ([python.org](https://python.org) or the `py`
-launcher) and [Git for Windows](https://gitforwindows.org), plus read access
-to the share for the account that runs the task.
+Requirements: Python 3.10+ and Git for Windows, plus read access to the
+share for the account running the task.
 
-1. Copy `config.example.json` to `config.json` (anywhere you like) and edit
-   it. Use forward slashes in paths — they work fine on Windows, including
-   UNC paths (`//SERVER/share/...`), and avoid JSON escaping headaches.
-
-   `exclude` is a list of case-insensitive globs matched against each file's
-   path relative to `source_dir` (posix, `*` spans `/`); a file matching any
-   of them is skipped. Use it to drop archive/backup/duplicate copies so the
-   set that remains has a unique filename per project — the archive keys one
-   top-level folder per project *name*, so two kept files with the same name
-   would collide. `["*archive*", "*/backup/*"]` covers the common cases.
-2. Do a first run by hand and eyeball the log:
+1. Copy `config.example.json` somewhere (e.g. `C:\ProjxArchive\config.json`)
+   and edit. Use forward slashes — they work on Windows, including UNC paths
+   (`//SERVER/share/...`), and avoid JSON escaping headaches.
+2. First runs by hand:
 
    ```powershell
-   py -3 nightly_sync.py C:\ProjxArchive\config.json --dry-run
-   py -3 nightly_sync.py C:\ProjxArchive\config.json
+   py -3 -m dw_compare --sync C:\ProjxArchive\config.json --dry-run
+   py -3 -m dw_compare --sync C:\ProjxArchive\config.json
+   py -3 -m dw_compare --census C:\ProjxArchive\config.json   # see what needs triage
    ```
 
-   The first real run archives every project as **new** (one-time).
-3. Schedule it (run the shell as the service account, or set `/RU`):
+   The first real run archives every project as new (one-time), then triage
+   the census in the GUI or with `--map`/`--track`/`--ignore`.
+3. Schedule it:
 
    ```powershell
    schtasks /Create /TN "ProjxDiff Nightly Sync" /SC DAILY /ST 02:00 ^
-     /TR "py -3 C:\path\to\ProjxDiff\scripts\nightly_sync\nightly_sync.py C:\ProjxArchive\config.json"
+     /TR "py -3 -m dw_compare --sync C:\ProjxArchive\config.json" ^
+     /RU <service-account>
    ```
 
-The script logs to `data_dir/sync.log` as well as the console, refuses to
-start if a previous run is still going (stale locks expire after 6 hours),
-and exits 0 on success, 1 if any individual project errored, 2/3 for
-unreachable source / concurrent run — so Task Scheduler's "last run result"
-is meaningful.
+   (If `py -3 -m` needs a working directory, set /TR to
+   `cmd /c cd /d C:\Tools\ProjxDiff && py -3 -m dw_compare --sync ...`.)
+
+Logs go to `data_dir/sync.log`; a lock file prevents overlapping runs (stale
+after 6h); exit codes: 0 ok, 1 per-project errors, 2 source unreachable,
+3 already running.
 
 ## The dashboard
 
-Every run finishes by regenerating `data_dir/dashboard.html` (disable with
-`"dashboard": false`): a self-contained static page — no server, no external
-resources, safe to open straight off a file share — showing changes per day
-over the last 60 days, the most-active projects / users / categories over the
-last 30, and a recent-changes table whose rows link into the dated drill-down
-reports. Light and dark mode both supported. Regenerate it by hand any time:
-
-```powershell
-py -3 dashboard.py C:\ProjxArchive\config.json
-```
-
-Point people at `data_dir\dashboard.html` (or copy/publish it wherever your
-team looks); each row's "report" link needs the neighboring `reports\` folder,
-so share the `data_dir` rather than the lone file if you want drill-down.
+`data_dir/dashboard.html` — self-contained, no server, safe to open off a
+file share. Shows the needs-attention panel, changes per day (60d), top
+projects/users/categories (30d), and a recent-changes table linking into the
+dated drill-down reports. Share the whole `data_dir` so the report links
+work.
 
 ## The metrics database
 
-`data_dir/metrics.sqlite`, three tables:
-
-- `runs` — one row per sync: date, timing, projects seen/changed, errors.
-- `category_changes` — one row per (date, project, category) with
-  added/removed/modified/unchanged counts. Only categories with activity are
-  recorded.
-- `element_changes` — one row per changed element: (date, project, owner,
-  category, element name, status). Whole-project add/remove events appear
-  here with `category='project'`.
-
-This is the feed for the dashboard / Power BI. The full field-level detail
-(old/new formulas) lives in the dated JSON reports; the archive repo itself
-holds every historical state, so any two dates can be re-diffed on demand:
-
-```bash
-python -m dw_compare <archive>/ProjectA_old_checkout ProjectA -o then_vs_now.html
-```
+`data_dir/metrics.sqlite`: `runs` (one row per sync), `category_changes`
+(per date/project/category counts), `element_changes` (one row per changed
+element; whole-project add/remove events use `category='project'`). This
+feeds the dashboard and Power BI. Field-level detail lives in the dated JSON
+reports; the archive repo holds every historical state, so any two dates can
+be re-diffed on demand with the app.
