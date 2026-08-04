@@ -4,9 +4,26 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.5.0] - 2026-08-04
 
 ### Added
+
+- **The report is redesigned** — the "ugly blue" is gone. A sidebar shell
+  puts the diff totals and a per-section navigator (with live change
+  counts) in a left rail; sections are cards in the main pane. **Light and
+  dark themes** with an Auto/Light/Dark toggle: Auto follows the viewer's
+  OS, an explicit choice persists in the browser. Status colors are
+  **colorblind-safe by design** — added is blue, removed is orange,
+  modified is violet-gray (distinct under red-green color blindness), and
+  status is never color alone: every badge is labeled, row badges carry
+  +/−/~ glyphs. All interactive behavior carries over unchanged (search,
+  status filters, unchanged toggles, expand/collapse, draggable columns).
+  The work dashboard gains the same Auto/Light/Dark toggle.
+- **Report UI test suite** — the rail, theming scopes, colorblind
+  guarantees, escaping of the new surfaces, and every interactive hook are
+  pinned by tests, and the report's embedded JavaScript now runs through
+  `node --check` in the suite so a script-block syntax break can never
+  ship silently.
 
 - **Model and model-rule diffing in the real report** (integrated from Wade
   Anderson's Project Diff Tool work; field-verified against live DriveWorks

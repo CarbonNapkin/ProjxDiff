@@ -216,6 +216,14 @@ def _attention_html(census: dict) -> str:
 
 # ---------------------------------------------------------------- render ----
 
+_DARK_VARS = """
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series: #3987e5; --critical: #d03b3b; --attn: #c98500;
+"""
+
 _CSS = """
 :root {
   color-scheme: light;
@@ -225,14 +233,14 @@ _CSS = """
   --series: #2a78d6; --critical: #d03b3b; --attn: #eda100;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --surface: #1a1a19; --page: #0d0d0d;
-    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
-    --series: #3987e5; --critical: #d03b3b; --attn: #c98500;
-  }
+  :root:not([data-theme="light"]) { """ + _DARK_VARS + """ }
 }
+:root[data-theme="dark"] { """ + _DARK_VARS + """ }
+.themeseg { float: right; display: inline-flex; gap: 4px; }
+.themeseg button { border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink-2); border-radius: 7px; padding: 3px 12px; font: inherit;
+  font-size: 12px; font-weight: 600; cursor: pointer; }
+.themeseg button.on { background: var(--series); border-color: var(--series); color: #fff; }
 * { box-sizing: border-box; }
 body { margin: 0 auto; max-width: 1120px; padding: 20px 20px 48px;
   background: var(--page); color: var(--ink);
@@ -298,6 +306,17 @@ document.querySelectorAll('.tab').forEach(btn => {
     });
   });
 });
+function setTheme(mode) {
+  if (mode) document.documentElement.setAttribute('data-theme', mode);
+  else document.documentElement.removeAttribute('data-theme');
+  try {
+    if (mode) localStorage.setItem('projxdiff-theme', mode);
+    else localStorage.removeItem('projxdiff-theme');
+  } catch (e) {}
+  document.querySelectorAll('.themeseg button').forEach(b =>
+    b.classList.toggle('on', (b.dataset.set || '') === (mode || '')));
+}
+setTheme((() => { try { return localStorage.getItem('projxdiff-theme') || ''; } catch (e) { return ''; } })());
 """
 
 
@@ -405,9 +424,20 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Projx Work Dashboard</title>
+<script>
+try {{
+    var t = localStorage.getItem('projxdiff-theme');
+    if (t) document.documentElement.setAttribute('data-theme', t);
+}} catch (e) {{}}
+</script>
 <style>{_CSS}</style>
 </head>
 <body>
+<div class="themeseg">
+  <button type="button" data-set="" onclick="setTheme('')">Auto</button>
+  <button type="button" data-set="light" onclick="setTheme('light')">Light</button>
+  <button type="button" data-set="dark" onclick="setTheme('dark')">Dark</button>
+</div>
 <h1>Projx Work Dashboard</h1>
 <p class="sub">{status} Generated {escape(datetime.now().strftime('%Y-%m-%d %H:%M'))}.</p>
 {err_html}

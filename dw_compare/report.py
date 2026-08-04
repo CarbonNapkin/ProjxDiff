@@ -1,5 +1,16 @@
 """
 HTML report generation for DriveWorks comparison.
+
+Layout: a sidebar shell — brand + diff totals + per-section navigation in a
+left rail, content sections in the main pane. Theming is variable-driven
+with a light theme (ink-navy rail, light content) and a dark theme, an
+Auto/Light/Dark toggle persisted in localStorage, and Auto following the
+viewer's OS via prefers-color-scheme.
+
+Status colors are colorblind-safe by design: added = blue, removed =
+orange, modified = violet-gray (the hue trio that stays distinct under
+red-green color blindness), and status is never conveyed by color alone —
+every badge carries a text label, and row badges add a +/−/~ glyph.
 """
 
 import traceback
@@ -34,6 +45,59 @@ def _safe(fn, *args):
         traceback.print_exc()
         return ('<p class="empty">Could not render this section (see console for details).</p>',
                 {'added': 0, 'removed': 0, 'modified': 0, 'unchanged': 0})
+
+
+# --------------------------------------------------------------------------
+# Theme variables. LIGHT is the ink-navy-rail light theme; DARK restates the
+# same design for a dark surface (re-stepped colors, not inverted). The dark
+# block is emitted twice: once under prefers-color-scheme (Auto mode) and
+# once under [data-theme="dark"] (explicit choice), so the viewer's toggle
+# beats the OS in both directions.
+# --------------------------------------------------------------------------
+
+_LIGHT_VARS = '''
+    --page: #fbfcfd; --card: #ffffff; --border: #d8dde4; --rowline: #edf0f4;
+    --ink: #14181d; --muted: #5f6a76; --sechead: #f8f9fb; --th-bg: #f4f6f9;
+    --formula-bg: #f3f5f8; --hover: #eef2f7; --focus: #1c5cab;
+    --rail-bg: #132a47; --rail-ink: #c9d6e8; --rail-muted: #7e93b0;
+    --rail-on: #1e416b; --rail-on-ink: #ffffff;
+    --rail-pill: #274d7d; --rail-pill-ink: #dbe6f4; --rail-chip: #1b3a61;
+    --added: #1c5cab; --added-soft: #e3edfa; --added-deep: #14447e;
+    --row-added: #f2f7fd; --row-added-strong: #e3edfa;
+    --removed: #c34d0e; --removed-soft: #fdeadd; --removed-deep: #8d3a0c;
+    --row-removed: #fdf5ee; --row-removed-strong: #fdeadd;
+    --modified: #5b5471; --modified-soft: #ececf3; --modified-deep: #454060;
+    --row-modified: #f6f6f9; --row-modified-strong: #ececf3;
+    --ins-bg: #cfe1f7; --ins-ink: #14447e; --del-bg: #f9dcc6; --del-ink: #8d3a0c;
+    --badge-unchanged-bg: #e6e9ee; --badge-unchanged-ink: #3b4350;
+    --grouper-bg: rgba(0,0,0,0.02); --group-border: #c3cad3;
+    --chip-added: #6da7ec; --chip-removed: #f09a63;
+    --chip-modified: #b9b3d6; --chip-unchanged: #55677f;
+'''
+
+_DARK_VARS = '''
+    --page: #17181a; --card: #1f2124; --border: #33363b; --rowline: #2a2d31;
+    --ink: #e7e9ec; --muted: #8d95a0; --sechead: #24272b; --th-bg: #26292d;
+    --formula-bg: #26292e; --hover: #282c31; --focus: #6da7ec;
+    --rail-bg: #101114; --rail-ink: #b9bec7; --rail-muted: #6e7683;
+    --rail-on: #23272e; --rail-on-ink: #ffffff;
+    --rail-pill: #2c3138; --rail-pill-ink: #c9cfd8; --rail-chip: #1a1c20;
+    --added: #6da7ec; --added-soft: #17273d; --added-deep: #a9c9f2;
+    --row-added: #1a2330; --row-added-strong: #20304a;
+    --removed: #f09a63; --removed-soft: #3a2313; --removed-deep: #f6bf97;
+    --row-removed: #2b2118; --row-removed-strong: #3a2c1d;
+    --modified: #b9b3d6; --modified-soft: #2a2836; --modified-deep: #d3cfe6;
+    --row-modified: #242231; --row-modified-strong: #2e2b40;
+    --ins-bg: #1d3a5f; --ins-ink: #b5d3f5; --del-bg: #4a2c14; --del-ink: #f6c9a4;
+    --badge-unchanged-bg: #2c3036; --badge-unchanged-ink: #aeb6c0;
+    --grouper-bg: rgba(255,255,255,0.02); --group-border: #454a52;
+    --chip-added: #6da7ec; --chip-removed: #f09a63;
+    --chip-modified: #b9b3d6; --chip-unchanged: #55677f;
+'''
+
+
+def _slug(title: str) -> str:
+    return 'sec-' + ''.join(c if c.isalnum() else '-' for c in title.lower())
 
 
 def generate_html_report(old_proj: DWProject, new_proj: DWProject,
@@ -94,78 +158,100 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         summary['removed'] += stats['removed']
         summary['modified'] += stats['modified']
         summary['unchanged'] += stats['unchanged']
-    
-    # Build full HTML
+
+    old_esc, new_esc = escape(old_name), escape(new_name)
+
+    # Rail navigation: one item per section with its change count; sections
+    # with no changes render dimmed but stay clickable (the click reveals
+    # them even while "Show unchanged sections" is off).
+    nav_items = ''
+    for title, _content, stats in sections:
+        changes = stats['added'] + stats['removed'] + stats['modified']
+        dim = '' if changes else ' dim'
+        nav_items += (f'<a class="navitem{dim}" href="#{_slug(title)}" '
+                      f'data-sec="{_slug(title)}">{escape(title)}'
+                      f'<span class="n">{changes:,}</span></a>\n')
+
     html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Projx Diff — Project Comparison</title>
+    <script>
+        /* Apply the saved theme before first paint to avoid a flash. */
+        try {{
+            var t = localStorage.getItem('projxdiff-theme');
+            if (t) document.documentElement.setAttribute('data-theme', t);
+        }} catch (e) {{}}
+    </script>
     <style>
-        :root {{
-            --added-bg: #e6ffec;
-            --added-bg-strong: #c8f0d3;
-            --added-border: #2e9b40;
-            --removed-bg: #ffebe9;
-            --removed-bg-strong: #f7c8c4;
-            --removed-border: #d33b30;
-            --modified-bg: #fff8e1;
-            --modified-bg-strong: #ffe9a8;
-            --modified-border: #e6890c;
-            --unchanged-bg: #f5f5f5;
-            --rule-bg: #f7f8fa;
-            --header-stack: 44px;
+        :root {{ --header-stack: 44px; {_LIGHT_VARS} }}
+        @media (prefers-color-scheme: dark) {{
+            :root:not([data-theme="light"]) {{ {_DARK_VARS} }}
         }}
+        :root[data-theme="dark"] {{ {_DARK_VARS} }}
 
         * {{ box-sizing: border-box; }}
 
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.4;
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 14px 16px 32px;
-            background: #fafafa;
-            color: #1f2024;
+            margin: 0;
+            background: var(--page);
+            color: var(--ink);
         }}
 
-        h1 {{
-            color: #1a237e;
-            border-bottom: 2px solid #3f51b5;
-            padding-bottom: 6px;
-            font-size: 22px;
-            margin: 0 0 8px;
-        }}
+        .shell {{ display: flex; align-items: flex-start; min-height: 100vh; }}
 
-        .meta {{
-            color: #555;
-            font-size: 13px;
-            margin: 0 0 10px;
-        }}
-
-        .summary {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 10px;
-            margin: 10px 0 12px;
-        }}
-
-        .stat-card {{
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-weight: 600;
+        /* ---- Left rail: brand, totals, section nav, theme toggle ---- */
+        nav.rail {{
+            position: sticky;
+            top: 0;
+            width: 232px;
+            height: 100vh;
+            overflow-y: auto;
+            flex-shrink: 0;
+            background: var(--rail-bg);
+            color: var(--rail-ink);
+            padding: 18px 14px;
             display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            font-size: 13px;
+            flex-direction: column;
         }}
-        .stat-card .stat-num {{ font-size: 20px; font-weight: 700; }}
+        .brand {{ font-weight: 800; color: #ffffff; font-size: 16px; }}
+        .brandsub {{ font-size: 11.5px; color: var(--rail-muted); margin: 2px 0 10px;
+                     overflow-wrap: anywhere; }}
+        .railcap {{ font-size: 10.5px; letter-spacing: .07em; color: var(--rail-muted);
+                    margin: 12px 0 6px; text-transform: uppercase; }}
+        .chip {{ display: flex; align-items: center; padding: 6px 10px; border-radius: 8px;
+                 font-size: 12.5px; margin-bottom: 5px; background: var(--rail-chip);
+                 color: var(--rail-pill-ink); }}
+        .chip b {{ margin-left: auto; font-variant-numeric: tabular-nums; }}
+        .ch-added {{ border-left: 3px solid var(--chip-added); }}
+        .ch-removed {{ border-left: 3px solid var(--chip-removed); }}
+        .ch-modified {{ border-left: 3px solid var(--chip-modified); }}
+        .ch-unchanged {{ border-left: 3px solid var(--chip-unchanged); }}
+        .navitem {{ display: flex; align-items: center; padding: 7px 10px; border-radius: 8px;
+                    font-size: 13px; color: var(--rail-ink); text-decoration: none; }}
+        .navitem:hover {{ background: var(--rail-on); color: var(--rail-on-ink); }}
+        .navitem.dim {{ opacity: .5; }}
+        .navitem .n {{ margin-left: auto; font-size: 11px; background: var(--rail-pill);
+                       border-radius: 99px; padding: 1px 8px; color: var(--rail-pill-ink);
+                       font-variant-numeric: tabular-nums; }}
+        .railfoot {{ margin-top: auto; padding-top: 14px; }}
+        .themeseg {{ display: flex; gap: 4px; }}
+        .themeseg button {{ flex: 1; border: 1px solid var(--rail-pill); background: transparent;
+                            color: var(--rail-ink); border-radius: 7px; padding: 5px 0;
+                            font-size: 11.5px; font-weight: 600; cursor: pointer; }}
+        .themeseg button.on {{ background: var(--rail-on); color: var(--rail-on-ink);
+                               border-color: var(--rail-on); }}
 
-        .stat-added {{ background: var(--added-bg); border-left: 4px solid var(--added-border); }}
-        .stat-removed {{ background: var(--removed-bg); border-left: 4px solid var(--removed-border); }}
-        .stat-modified {{ background: var(--modified-bg); border-left: 4px solid var(--modified-border); }}
-        .stat-unchanged {{ background: var(--unchanged-bg); border-left: 4px solid #9e9e9e; }}
+        /* ---- Main pane ---- */
+        main {{ flex: 1; min-width: 0; padding: 16px 22px 32px; max-width: 1400px; }}
+        .pagehead {{ font-size: 14px; margin: 2px 0 12px; }}
+        .pagehead .arr {{ color: var(--muted); margin: 0 4px; }}
+        .pagehead .sub {{ color: var(--muted); font-size: 12px; margin-left: 10px; }}
+        .pagehead a {{ color: var(--added); text-decoration: none; }}
 
         /* Filter bar sticks at top of viewport while scrolling. */
         .filter-bar {{
@@ -174,10 +260,9 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             z-index: 10;
             margin: 0 0 14px;
             padding: 8px 10px;
-            background: rgba(255,255,255,0.92);
-            backdrop-filter: saturate(180%) blur(8px);
-            border: 1px solid #e3e5e9;
-            border-radius: 8px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
             display: flex;
             flex-wrap: wrap;
             align-items: center;
@@ -188,31 +273,35 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         .filter-bar button {{
             padding: 4px 10px;
             font-size: 13px;
+            font-weight: 600;
             cursor: pointer;
-            border: 1px solid #c8ccd2;
-            background: #fff;
-            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            color: var(--ink);
+            border-radius: 7px;
         }}
-        .filter-bar button:hover {{ background: #f0f1f4; }}
+        .filter-bar button:hover {{ background: var(--hover); }}
 
         #searchBox {{
-            flex: 1 0 220px;
-            min-width: 220px;
+            flex: 1 0 200px;
+            min-width: 200px;
             padding: 5px 10px;
-            border: 1px solid #c8ccd2;
-            border-radius: 6px;
+            border: 1px solid var(--border);
+            border-radius: 7px;
             font-size: 13px;
+            background: var(--page);
+            color: var(--ink);
         }}
         #searchBox:focus {{
-            outline: 2px solid #3f51b5;
-            border-color: #3f51b5;
+            outline: 2px solid var(--focus);
+            border-color: var(--focus);
         }}
 
         .section {{
-            background: white;
-            border-radius: 8px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
             margin: 10px 0;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
             overflow: hidden;
         }}
 
@@ -220,17 +309,19 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         body.hide-quiet .section[data-quiet="1"] {{ display: none; }}
 
         .section-header {{
-            background: #3f51b5;
-            color: white;
-            padding: 8px 14px;
+            background: var(--sechead);
+            color: var(--ink);
+            border-bottom: 1px solid var(--border);
+            padding: 9px 14px;
             cursor: pointer;
             display: flex;
             justify-content: space-between;
             align-items: center;
             font-size: 14px;
         }}
-        .section-header:hover {{ background: #303f9f; }}
-        .section-header .title {{ font-weight: 600; }}
+        .section-header:hover {{ background: var(--hover); }}
+        .section-header .title {{ font-weight: 700; }}
+        .section.collapsed .section-header {{ border-bottom: none; }}
 
         .section-content {{
             padding: 0;
@@ -247,58 +338,69 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             margin: 0;
             padding: 8px 14px;
             font-size: 14px;
-            background: #fafbfd;
-            border-top: 1px solid #e6e8ec;
-            border-bottom: 1px solid #e6e8ec;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            background: var(--sechead);
+            color: var(--ink);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
         }}
         .section-content > h3:first-child {{ border-top: none; }}
-        .section-content > h3.added {{ background: var(--added-bg); }}
-        .section-content > h3.removed {{ background: var(--removed-bg); }}
-        .section-content > h3.modified {{ background: var(--modified-bg); }}
-        .section-content > h3 small {{ color: #555; font-weight: 500; margin-left: 6px; }}
+        .section-content > h3.added {{ background: var(--added-soft); }}
+        .section-content > h3.removed {{ background: var(--removed-soft); }}
+        .section-content > h3.modified {{ background: var(--modified-soft); }}
+        .section-content > h3 small {{ color: var(--muted); font-weight: 500; margin-left: 6px; }}
 
         .section-content > p.empty {{ padding: 12px 14px; margin: 0; }}
 
+        /* Badges: labeled pills. Text is the accessible signal; row badges
+           (inside table cells) additionally carry a +/−/~ glyph. Section
+           header count badges already include their sign in the text. */
         .badge {{
             display: inline-block;
             padding: 1px 8px;
-            border-radius: 10px;
+            border-radius: 99px;
             font-size: 11px;
+            font-weight: 700;
             margin-left: 6px;
             vertical-align: middle;
             white-space: nowrap;
         }}
-        .badge-added {{ background: var(--added-border); color: white; }}
-        .badge-removed {{ background: var(--removed-border); color: white; }}
-        .badge-modified {{ background: var(--modified-border); color: white; }}
+        .badge-added {{ background: var(--added-soft); color: var(--added-deep);
+                        border: 1px solid var(--added); }}
+        .badge-removed {{ background: var(--removed-soft); color: var(--removed-deep);
+                          border: 1px solid var(--removed); }}
+        .badge-modified {{ background: var(--modified-soft); color: var(--modified-deep);
+                           border: 1px solid var(--modified); }}
+        .badge-unchanged {{ background: var(--badge-unchanged-bg); color: var(--badge-unchanged-ink); }}
+        td .badge-added::before {{ content: "+ "; }}
+        td .badge-removed::before {{ content: "\\2212\\00a0"; }}
+        td .badge-modified::before {{ content: "~ "; }}
 
         table {{
             width: 100%;
             border-collapse: collapse;
-            font-size: 13px;
+            font-size: 12.5px;
         }}
 
         th, td {{
             padding: 5px 10px;
             text-align: left;
-            border-bottom: 1px solid #ececef;
+            border-bottom: 1px solid var(--rowline);
             vertical-align: top;
         }}
         td:first-child {{ word-break: break-word; }}
 
         /* Table column header sticks just under any sticky h3. */
         th {{
-            background: #f0f2f5;
+            background: var(--th-bg);
             font-weight: 600;
             position: sticky;
             top: var(--header-stack);
             z-index: 2;
-            box-shadow: inset 0 -1px 0 #d8dbe0;
-            font-size: 12px;
+            box-shadow: inset 0 -1px 0 var(--border);
+            font-size: 11px;
             text-transform: uppercase;
-            letter-spacing: 0.02em;
-            color: #495160;
+            letter-spacing: 0.03em;
+            color: var(--muted);
         }}
         /* When no h3 sub-header is present in a section, th sits at top: 0. */
         .section-content > table:first-child th,
@@ -318,32 +420,29 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             z-index: 3;
         }}
         th .col-resizer:hover, th .col-resizer.resizing {{
-            background: #3f51b5;
+            background: var(--focus);
             opacity: 0.5;
         }}
         body.col-resizing, body.col-resizing * {{ cursor: col-resize !important; user-select: none !important; }}
 
-        tbody tr:hover {{ background: #eef1f5; }}
-        tr.added {{ background: var(--added-bg); }}
-        tr.added:hover {{ background: var(--added-bg-strong); }}
-        tr.removed {{ background: var(--removed-bg); }}
-        tr.removed:hover {{ background: var(--removed-bg-strong); }}
-        tr.modified {{ background: var(--modified-bg); }}
-        tr.modified:hover {{ background: var(--modified-bg-strong); }}
+        tbody tr:hover {{ background: var(--hover); }}
+        tr.added {{ background: var(--row-added); }}
+        tr.added:hover {{ background: var(--row-added-strong); }}
+        tr.removed {{ background: var(--row-removed); }}
+        tr.removed:hover {{ background: var(--row-removed-strong); }}
+        tr.modified {{ background: var(--row-modified); }}
+        tr.modified:hover {{ background: var(--row-modified-strong); }}
 
         /* Group-start marks the first row of a parent-child group (Form ->
            Control -> Property, Macro -> Task -> Property, CalcTable Column
            -> Scope). Repeated cells are blank on later rows, so this border
            draws the visible parent boundary. */
-        tbody tr.group-start td {{ border-top: 2px solid #b8bcc4; }}
+        tbody tr.group-start td {{ border-top: 2px solid var(--group-border); }}
         tbody tr.group-start:first-child td {{ border-top: none; }}
         /* The first one or two cells of a row are identity cells; on later
            rows in a group they are blank. Give them slightly muted styling so
            the eye reads the grouped chunk as one block. */
-        td.grouper {{ font-weight: 500; color: #2a2c30; background: rgba(0,0,0,0.015); }}
-        tr.added td.grouper, tr.removed td.grouper, tr.modified td.grouper {{
-            background: rgba(0,0,0,0.04);
-        }}
+        td.grouper {{ font-weight: 500; background: var(--grouper-bg); }}
 
         /* Lookup-table grids render the actual CSV data with per-cell
            highlighting. Unchanged rows are hidden by default; the
@@ -353,8 +452,8 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             top: var(--header-stack);
             white-space: nowrap;
         }}
-        table.lookup-grid th.col-added {{ background: var(--added-bg); }}
-        table.lookup-grid th.col-removed {{ background: var(--removed-bg); }}
+        table.lookup-grid th.col-added {{ background: var(--added-soft); }}
+        table.lookup-grid th.col-removed {{ background: var(--removed-soft); }}
         table.lookup-grid td {{
             font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
             font-size: 12px;
@@ -362,11 +461,11 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             overflow-wrap: anywhere;
         }}
         table.lookup-grid td.cell-changed {{
-            background: var(--modified-bg-strong);
+            background: var(--row-modified-strong);
             font-weight: 500;
         }}
-        table.lookup-grid td.cell-added {{ background: var(--added-bg-strong); }}
-        table.lookup-grid td.cell-removed {{ background: var(--removed-bg-strong); }}
+        table.lookup-grid td.cell-added {{ background: var(--row-added-strong); }}
+        table.lookup-grid td.cell-removed {{ background: var(--row-removed-strong); }}
         body:not(.show-lookup-unchanged) table.lookup-grid tbody tr.unchanged {{ display: none; }}
 
         .formula {{
@@ -374,7 +473,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             font-size: 12px;
             white-space: pre-wrap;
             word-break: break-word;
-            background: var(--rule-bg);
+            background: var(--formula-bg);
             padding: 3px 7px;
             border-radius: 4px;
             max-width: min(60vw, 720px);
@@ -398,41 +497,70 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         table.rule-changes th:nth-child(6), table.rule-changes td:nth-child(6) {{ width: 30%; }}
         table.rule-changes .formula {{ max-width: none; }}
 
+        /* Inline formula diffs: added = blue, removed = orange, matching the
+           colorblind-safe status hues (never green/red). */
         span.added {{
-            background: #b6e8c1;
+            background: var(--ins-bg);
+            color: var(--ins-ink);
             padding: 0 3px;
             border-radius: 3px;
         }}
         span.removed {{
-            background: #f6c1c1;
+            background: var(--del-bg);
+            color: var(--del-ink);
             padding: 0 3px;
             border-radius: 3px;
             text-decoration: line-through;
         }}
 
-        .empty {{ color: #888; font-style: italic; }}
-        .attr-note {{ color: #888; font-size: 11px; margin-top: 3px; }}
-        .toggle {{ font-size: 18px; user-select: none; }}
+        .empty {{ color: var(--muted); font-style: italic; }}
+        .attr-note {{ color: var(--muted); font-size: 11px; margin-top: 3px; }}
+        .toggle {{ font-size: 18px; user-select: none; color: var(--muted); }}
+
+        footer {{ margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--border);
+                  color: var(--muted); font-size: 12px; text-align: center; }}
+        footer a {{ color: var(--muted); }}
+
+        @media print {{
+            nav.rail {{ display: none; }}
+            .filter-bar {{ display: none; }}
+            .section-content {{ max-height: none; overflow: visible; }}
+        }}
     </style>
 </head>
 <body>
-    <h1>🔄 Projx Diff — Project Comparison</h1>
-    
-    <div class="meta">
-        <strong>Old:</strong> {escape(old_name)} &nbsp;→&nbsp; <strong>New:</strong> {escape(new_name)}<br>
-        Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by
-        <a href="{__url__}" style="color:#3f51b5;text-decoration:none;">Projx Diff v{__version__}</a>
-    </div>
-    
-    <div class="summary">
-        <div class="stat-card stat-added"><span>➕ Added</span><span class="stat-num">{summary['added']}</span></div>
-        <div class="stat-card stat-removed"><span>➖ Removed</span><span class="stat-num">{summary['removed']}</span></div>
-        <div class="stat-card stat-modified"><span>✏️ Modified</span><span class="stat-num">{summary['modified']}</span></div>
-        <div class="stat-card stat-unchanged"><span>✓ Unchanged</span><span class="stat-num">{summary['unchanged']}</span></div>
+<div class="shell">
+    <nav class="rail">
+        <div class="brand">Projx Diff</div>
+        <div class="brandsub">{old_esc} &rarr; {new_esc}</div>
+
+        <div class="railcap">This diff</div>
+        <div class="chip ch-added"><span>+ Added</span><b>{summary['added']:,}</b></div>
+        <div class="chip ch-removed"><span>&minus; Removed</span><b>{summary['removed']:,}</b></div>
+        <div class="chip ch-modified"><span>~ Modified</span><b>{summary['modified']:,}</b></div>
+        <div class="chip ch-unchanged"><span>&check; Unchanged</span><b>{summary['unchanged']:,}</b></div>
+
+        <div class="railcap">Sections</div>
+        {nav_items}
+        <div class="railfoot">
+            <div class="railcap">Theme</div>
+            <div class="themeseg">
+                <button type="button" data-set="" onclick="setTheme('')">Auto</button>
+                <button type="button" data-set="light" onclick="setTheme('light')">Light</button>
+                <button type="button" data-set="dark" onclick="setTheme('dark')">Dark</button>
+            </div>
+        </div>
+    </nav>
+
+    <main>
+    <div class="pagehead">
+        <strong>{old_esc}</strong><span class="arr">&rarr;</span><strong>{new_esc}</strong>
+        <span class="sub">Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by
+        <a href="{__url__}">Projx Diff v{__version__}</a></span>
     </div>
 
     <div class="filter-bar">
-        <input type="text" id="searchBox" placeholder="🔍 Search names, formulas..." oninput="filterRows()">
+        <input type="text" id="searchBox" placeholder="Search names, formulas..." oninput="filterRows()">
         <label><input type="checkbox" id="showAdded" checked onchange="filterRows()"> Added</label>
         <label><input type="checkbox" id="showRemoved" checked onchange="filterRows()"> Removed</label>
         <label><input type="checkbox" id="showModified" checked onchange="filterRows()"> Modified</label>
@@ -443,7 +571,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         <button onclick="expandAll(false)">Collapse all</button>
     </div>
 '''
-    
+
     for section_name, section_content, stats in sections:
         badges = ''
         if stats['added']: badges += f'<span class="badge badge-added">+{stats["added"]}</span>'
@@ -454,10 +582,10 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         collapsed = 'collapsed' if quiet else ''
         unchanged_count = stats.get('unchanged', 0)
         if quiet and unchanged_count:
-            badges += f'<span class="badge" style="background:#dadde2;color:#3b3f48">{unchanged_count} unchanged</span>'
+            badges += f'<span class="badge badge-unchanged">{unchanged_count} unchanged</span>'
 
         html += f'''
-    <div class="section {collapsed}" data-quiet="{1 if quiet else 0}">
+    <div class="section {collapsed}" id="{_slug(section_name)}" data-quiet="{1 if quiet else 0}">
         <div class="section-header" onclick="this.parentElement.classList.toggle('collapsed')">
             <span class="title">{section_name}{badges}</span>
             <span class="toggle">▼</span>
@@ -467,9 +595,20 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         </div>
     </div>
 '''
-    
+
     html += '''
     <script>
+        function setTheme(mode) {
+            if (mode) document.documentElement.setAttribute('data-theme', mode);
+            else document.documentElement.removeAttribute('data-theme');
+            try {
+                if (mode) localStorage.setItem('projxdiff-theme', mode);
+                else localStorage.removeItem('projxdiff-theme');
+            } catch (e) {}
+            document.querySelectorAll('.themeseg button').forEach(b =>
+                b.classList.toggle('on', (b.dataset.set || '') === (mode || '')));
+        }
+
         function filterRows() {
             const showAdded = document.getElementById('showAdded').checked;
             const showRemoved = document.getElementById('showRemoved').checked;
@@ -497,24 +636,24 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             document.querySelectorAll('tbody tr').forEach(row => {
                 // Skip empty placeholder rows
                 if (row.querySelector('.empty')) return;
-                
+
                 // Check status filter
                 let statusMatch = false;
                 if (row.classList.contains('added') && showAdded) statusMatch = true;
                 else if (row.classList.contains('removed') && showRemoved) statusMatch = true;
                 else if (row.classList.contains('modified') && showModified) statusMatch = true;
                 else if (row.classList.contains('unchanged') && showUnchanged) statusMatch = true;
-                
+
                 // Check search filter
                 let searchMatch = true;
                 if (searchText) {
                     const rowText = row.textContent.toLowerCase();
                     searchMatch = rowText.includes(searchText);
                 }
-                
+
                 row.style.display = (statusMatch && searchMatch) ? '' : 'none';
             });
-            
+
             // Keep a group's identity row visible whenever any row in that
             // group is still visible, so filtered child rows are not orphaned.
             document.querySelectorAll('.section-content tbody').forEach(tb => {
@@ -578,82 +717,95 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             });
         }
 
-        function initColumnResize() {{
-            document.querySelectorAll('table').forEach(table => {{
+        function initNav() {
+            document.querySelectorAll('.navitem').forEach(a => {
+                a.addEventListener('click', e => {
+                    e.preventDefault();
+                    const sec = document.getElementById(a.dataset.sec);
+                    if (!sec) return;
+                    // A quiet section may be hidden entirely; reveal the
+                    // quiet set before jumping so the scroll has a target.
+                    if (sec.dataset.quiet === '1') {
+                        const qb = document.getElementById('showQuietSections');
+                        if (!qb.checked) { qb.checked = true; applySectionVisibility(); }
+                    }
+                    sec.classList.remove('collapsed');
+                    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            });
+        }
+
+        function initColumnResize() {
+            document.querySelectorAll('table').forEach(table => {
                 const headerRow = table.querySelector('thead tr');
                 if (!headerRow) return;
                 const ths = Array.from(headerRow.children);
-                ths.forEach((th, i) => {{
+                ths.forEach((th, i) => {
                     if (i === ths.length - 1) return;  // last column fills remaining space
                     const handle = document.createElement('div');
                     handle.className = 'col-resizer';
                     th.appendChild(handle);
 
-                    handle.addEventListener('mousedown', e => {{
+                    handle.addEventListener('mousedown', e => {
                         e.preventDefault();
                         e.stopPropagation();
                         const startX = e.clientX;
                         // Freeze every column's CURRENT rendered width as an
                         // inline px value before switching to fixed layout,
                         // so dragging one column doesn't reflow the rest of
-                        // the table. Measuring here (not at page load) means
-                        // this works correctly even for tables inside a
-                        // collapsed/hidden section, since it's only measured
-                        // once the user can actually see and click it.
+                        // the table.
                         table.style.tableLayout = 'fixed';
-                        ths.forEach(h => {{ h.style.width = h.offsetWidth + 'px'; }});
+                        ths.forEach(h => { h.style.width = h.offsetWidth + 'px'; });
                         const startWidth = th.offsetWidth;
-                        // The table itself was still CSS width:100% - with
-                        // every column now pinned to an explicit px width,
-                        // that 100% constraint forced the browser to
-                        // proportionally stretch/shrink every OTHER column
-                        // to keep the total at 100% whenever the dragged
-                        // one changed (this is what made columns to the
-                        // LEFT appear to grow when dragging left). Freezing
-                        // the table's own width in px too, and adjusting it
-                        // by the same delta as the dragged column, means
-                        // only that one column ever changes - the table
-                        // grows/shrinks instead of redistributing.
+                        // Freeze the table's own width too and adjust it by
+                        // the same delta as the dragged column, so only that
+                        // one column ever changes size — the table grows or
+                        // shrinks instead of redistributing (the Excel-style
+                        // behaviour).
                         const startTableWidth = table.offsetWidth;
                         table.style.width = startTableWidth + 'px';
                         handle.classList.add('resizing');
                         document.body.classList.add('col-resizing');
 
-                        function onMove(ev) {{
+                        function onMove(ev) {
                             const delta = ev.clientX - startX;
                             const newWidth = Math.max(40, startWidth + delta);
                             const actualDelta = newWidth - startWidth;
                             th.style.width = newWidth + 'px';
                             table.style.width = (startTableWidth + actualDelta) + 'px';
-                        }}
-                        function onUp() {{
+                        }
+                        function onUp() {
                             document.removeEventListener('mousemove', onMove);
                             document.removeEventListener('mouseup', onUp);
                             handle.classList.remove('resizing');
                             document.body.classList.remove('col-resizing');
-                        }}
+                        }
                         document.addEventListener('mousemove', onMove);
                         document.addEventListener('mouseup', onUp);
-                    }});
-                }});
-            }});
-        }}
+                    });
+                });
+            });
+        }
 
         // Default: hide sections with no changes; user can toggle them back on.
+        setTheme((() => { try { return localStorage.getItem('projxdiff-theme') || ''; } catch (e) { return ''; } })());
         applySectionVisibility();
         applyLookupRowVisibility();
         filterRows();
+        initNav();
         initColumnResize();
     </script>
-    <footer style="margin-top:24px;padding-top:12px;border-top:1px solid #e3e5e9;color:#888;font-size:12px;text-align:center;">
+    <footer>
         Projx Diff v''' + __version__ + ''' &middot;
-        <a href="''' + __url__ + '''" style="color:#888;">''' + __url__ + '''</a>
+        <a href="''' + __url__ + '''">''' + __url__ + '''</a>
         <div style="margin-top:8px;font-size:11px;line-height:1.5;">
             Projx Diff is an independent tool by Base 10 Consultants. It is not
             affiliated with, endorsed by, or tested by DriveWorks&trade; Ltd.
             DriveWorks&trade; is a trademark of DriveWorks Ltd.
         </div>
     </footer>
+    </main>
+</div>
 </body>
 </html>
 '''
