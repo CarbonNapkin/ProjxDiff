@@ -4,6 +4,17 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-08-04
+
+### Fixed
+
+- **The Windows exe now bundles pyodbc**, so database name resolution
+  (Models / Rule Changes) works from the packaged binary out of the box.
+  The 1.5.0 exe silently fell back to raw GUIDs because the CI build
+  environment lacked pyodbc at bundle time — the app degraded cleanly, but
+  the advertised feature required a separate Python install. (The system
+  ODBC driver is still a prerequisite, as on any SQL Server client.)
+
 ## [1.5.0] - 2026-08-04
 
 ### Added

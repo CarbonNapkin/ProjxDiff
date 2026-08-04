@@ -61,6 +61,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
 
+      # pyodbc must be present at build time to be bundled into the frozen
+      # binary — without it the shipped exe's database name-resolution
+      # silently falls back to raw GUIDs (the app itself degrades cleanly,
+      # but the feature is advertised). Windows is the platform that talks
+      # to SQL Server in the field.
+      - name: Install pyodbc for bundling (Windows)
+        if: matrix.target_name == 'windows'
+        run: python -m pip install pyodbc
+
       - name: Build
         run: python -m PyInstaller dw_compare.spec --clean --noconfirm
 

@@ -80,7 +80,12 @@ a = Analysis(
     binaries=[],
     datas=_datas,
     hiddenimports=['dw_compare.gui', 'dw_compare.sync', 'dw_compare.census',
-                   'dw_compare.dashboard'],
+                   'dw_compare.dashboard',
+                   # Optional at runtime (dbsource degrades without it) but
+                   # must be bundled when present so the frozen exe can do
+                   # database name resolution. PyInstaller warns-not-fails
+                   # when it's absent from the build env (macOS/Linux).
+                   'pyodbc'],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
