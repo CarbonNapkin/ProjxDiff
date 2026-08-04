@@ -44,8 +44,14 @@ class IdSource:
 ID_SOURCES: dict = {
     # ComponentTask.component_id -> master model / component name.
     # This is the big one: it's what makes "which model does this task drive?"
-    # readable, and it's the ID currently embedded in the component-task key.
-    "component": IdSource(table="", id_col="", name_col="", enabled=False),
+    # readable. CONFIRMED live against two independent DW22 group databases
+    # (12/12 CCRef probe + field use at two sites): CapturedComponents.Id
+    # keys the captured file, Path is its identity (the SolidWorks file).
+    # This flat table is the runtime default (IdResolver() uses it);
+    # ID_SOURCES_BY_DW_VERSION below records the same facts per DriveWorks
+    # release for when schemas diverge.
+    "component": IdSource(table="CapturedComponents", id_col="Id",
+                          name_col="Path", schema="dbo", enabled=True),
 
     # If model files (SLDPRT/SLDASM) are tracked separately from components.
     "model": IdSource(table="", id_col="", name_col="", enabled=False),

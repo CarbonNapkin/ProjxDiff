@@ -410,6 +410,11 @@ def load_project(folder: Path) -> DWProject:
         print(f"  Found: {ct_file}")
         proj.component_tasks.update(parse_component_tasks(ct_file))
 
+    # Component Sets, placed components, and driven-property rules — all
+    # free, no database needed, straight from project.xml and components/.
+    from . import components as _components
+    proj.component_index = _components.build_component_index(str(folder))
+
     # Resolve category GUIDs on Variables to human-readable names. Leave the
     # raw GUID in place if the project never declared a matching Category.
     if proj.categories:

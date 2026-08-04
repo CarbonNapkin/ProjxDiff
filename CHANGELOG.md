@@ -8,6 +8,38 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Model and model-rule diffing in the real report** (integrated from Wade
+  Anderson's Project Diff Tool work; field-verified against live DriveWorks
+  22 environments at two sites). Three new report sections:
+  **Component Sets** (named model factories with their generation rules —
+  free from project.xml, no database needed), **Models** (the resolved
+  captured-file inventory, matched by *file name* — not folder location and
+  not database id, since the same real file can carry a different id in
+  each group database), and **Rule Changes** (every driven property —
+  dimensions, features, instances, file-name/relative-path/tag/loop-control
+  rules — keyed by per-placement rule id, with filename breadcrumbs and
+  full-path tooltips). The Type column uses the **authoritative
+  classification GUID** decoded from CapturedComponents.Data's `T`
+  attribute rather than heuristics, with a structural fallback when no
+  database is attached. Everything degrades gracefully offline: raw GUIDs
+  instead of names, report still runs.
+- **Per-side database connections**: CLI `--old-db-*` / `--new-db-*` flags
+  (Windows auth default; SQL auth via DW_SQL_PASSWORD_OLD/NEW env vars —
+  never a password on the command line) and a GUI **Database Options
+  panel** (shown by default; two servers, SQL-auth-first with a Windows-
+  auth checkbox; server/database/username remembered per user, password
+  never written to disk). Connection failures classify into short
+  actionable messages (server unreachable / login failed / database not
+  found / no driver) surfaced in the status line and CLI recap — a failed
+  side falls back to GUIDs instead of failing the report.
+- **Report ergonomics**: draggable column resizing on every table
+  (Excel-style — only the dragged column changes), and the "Unchanged
+  rows" toggle now also reveals fully-unchanged sections. GUI file pickers
+  normalize to native Windows paths and remember a last-used folder per
+  field.
+- `scripts/db/webapp.py` — Wade's standalone local web preview for
+  component-set diffs and database probing.
+
 - **One-click in-app updates.** The update notice is now a download button:
   the app fetches the new version's installer (Windows) or app zip (macOS),
   verifies it against the release's new `SHA256SUMS.txt` — an unverifiable
