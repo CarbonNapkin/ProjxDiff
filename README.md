@@ -136,6 +136,39 @@ python -m dw_compare --dashboard config.json
 See [scripts/nightly_sync/README.md](scripts/nightly_sync/README.md) for
 setup (Windows Task Scheduler) and the config format.
 
+## Group Database Name Resolution (optional)
+
+Captured models and rule changes reference components by GUID inside the
+project file; the human-readable names live in the DriveWorks **group
+database** (SQL Server). Point a compare at the group database for each
+side and the Models and Rule Changes sections resolve those GUIDs to real
+component and model names:
+
+```bash
+python3 -m dw_compare old.driveprojx new.driveprojx \
+  --old-db-server SQLHOST --old-db-database DWGroup \
+  --new-db-server SQLHOST --new-db-database DWGroup
+```
+
+Windows integrated auth is the CLI default; for SQL Server logins pass
+`--old-db-user`/`--new-db-user` and put the password in the
+`DW_SQL_PASSWORD` environment variable (or `DW_SQL_PASSWORD_OLD`/`_NEW`
+when the sides differ) — passwords are never accepted on the command line
+and never written to disk. Lookups are read-only and fail soft: with no
+database (or `pyodbc` missing) the report simply shows raw GUIDs.
+
+In the GUI this lives in a **Database Options** panel that is off by
+default — most installs have no group database and never need to see it.
+To enable it, add the feature flag to the settings file at
+`~/.projxdiff` (`%USERPROFILE%\.projxdiff` on Windows):
+
+```json
+{"enable_db": true}
+```
+
+Machines that saved a database server before the flag existed keep the
+panel automatically; setting `"enable_db": false` hides it regardless.
+
 ## Supported File Types
 
 The tool parses:

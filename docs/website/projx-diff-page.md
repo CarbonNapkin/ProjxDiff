@@ -18,7 +18,15 @@ Free, runs entirely on your machine, no Python required.
 report showing added, modified, and unchanged variables with inline formula
 diffs"]*
 
-**New in 1.3: track your whole project library, automatically.** Point
+**New in 1.5: a redesigned report, in light and dark.** Diff totals and a
+per-section navigator with live change counts sit in a left sidebar, so
+even a large diff reads at a glance. Auto/Light/Dark themes follow your OS
+or your explicit choice. Status colors are colorblind-safe by design, and
+every change is labeled — never color alone. Captured model and model-rule
+changes now appear in the report too, with component and model names
+resolved straight from your DriveWorks group database when you connect one.
+
+**Track your whole project library, automatically.** Point
 Projx Diff at your project shares and it archives every project nightly
 into version control, detects what changed, and builds a team dashboard —
 activity trends, most-active projects, and per-user contribution,

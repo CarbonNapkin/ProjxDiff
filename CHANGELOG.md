@@ -4,6 +4,19 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] - 2026-08-04
+
+### Changed
+
+- **The GUI's Database Options panel is now behind a feature flag**, off by
+  default — most installs have no DriveWorks group database and shouldn't
+  see SQL connection fields. Enable it with `{"enable_db": true}` in the
+  settings file (`~/.projxdiff`, `%USERPROFILE%\.projxdiff` on Windows).
+  Machines that already saved a database server keep the panel
+  automatically; an explicit `"enable_db": false` always hides it. The
+  CLI `--old-db-*`/`--new-db-*` flags are unaffected — using them is
+  opting in. Includes the 1.5.1 fix (pyodbc bundled in the Windows exe).
+
 ## [1.5.1] - 2026-08-04
 
 ### Fixed

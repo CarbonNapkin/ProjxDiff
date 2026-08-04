@@ -182,9 +182,8 @@ class CompareApp:
         # window grows to fit it when shown.
         root.geometry('760x392')   # _sync_window_size grows this per panel
         self.show_log = BooleanVar(value=False)
-        self.show_db = BooleanVar(value=True)
+        self.show_db = BooleanVar(value=False)   # set after settings load
         self._busy = False
-        self._build_menu()
 
         self.old_path = StringVar()
         self.new_path = StringVar()
@@ -204,6 +203,14 @@ class CompareApp:
         # password is the one exception: in-memory only, never written to
         # disk (dbsource.py's "no stored credentials" rule).
         saved = _load_settings()
+        # Feature flag: the SQL panel only appears for deployments that opt
+        # in — most downloads have no group database and shouldn't see it.
+        # Enable with {"enable_db": true} in ~/.projxdiff; machines that
+        # already saved a DB server (pre-flag setups) auto-enable so nothing
+        # breaks. An explicit false always wins.
+        self.db_enabled = bool(saved.get(
+            'enable_db',
+            saved.get('old_db_server') or saved.get('new_db_server')))
         self.old_db_server = StringVar(value=saved.get('old_db_server', ''))
         self.new_db_server = StringVar(value=saved.get('new_db_server', ''))
         self.old_db_database = StringVar(value=saved.get('old_db_database', ''))
@@ -219,9 +226,12 @@ class CompareApp:
         # Tk's single global one. Session-only.
         self._last_dirs: dict[str, str] = {}
 
+        self.show_db.set(self.db_enabled)
+
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._worker: threading.Thread | None = None
 
+        self._build_menu()
         self._build_ui()
         self._drain_log()
         threading.Thread(target=self._check_updates, daemon=True).start()
@@ -240,8 +250,9 @@ class CompareApp:
         view_menu = tk.Menu(menubar, tearoff=False)
         view_menu.add_checkbutton(label='Show Log', variable=self.show_log,
                                   command=self._apply_log_visibility)
-        view_menu.add_checkbutton(label='Show Database Options', variable=self.show_db,
-                                  command=self._apply_db_visibility)
+        if self.db_enabled:
+            view_menu.add_checkbutton(label='Show Database Options', variable=self.show_db,
+                                      command=self._apply_db_visibility)
         menubar.add_cascade(label='View', menu=view_menu)
 
         tools_menu = tk.Menu(menubar, tearoff=False)
@@ -489,9 +500,41 @@ class CompareApp:
         self.compare_btn.grid(row=3, column=2, columnspan=2, sticky='ew', **pad)
 
         # Database Options panel — optional per-side group-DB connection for
-        # resolving model/rule names. Shown by default (View ▸ Show Database
-        # Options hides it). SQL auth fields hide when Windows auth is on.
+        # resolving model/rule names. Feature-flagged: only built when
+        # enable_db is on (see __init__); SQL auth fields hide when Windows
+        # auth is selected.
         self._db_row = 4
+        if self.db_enabled:
+            self._build_db_panel(frm)
+
+        # Status line — wraps so the full output path is always visible, and
+        # carries run progress/results now that the log is hidden by default.
+        self.status_label = tk.Label(frm, text='', bg=bg, anchor='w', justify='left',
+                                     wraplength=660)
+        self.status_label.grid(row=5, column=0, columnspan=4, sticky='w', padx=8, pady=(2, 2))
+
+        # Filled by a background update check (notify-only; see _check_updates).
+        self.update_label = tk.Label(frm, text='', bg=bg, fg='#3f51b5', anchor='w', cursor='hand2')
+        self.update_label.grid(row=6, column=0, columnspan=4, sticky='w', padx=8, pady=(0, 6))
+
+        # Log pane — hidden by default; toggled via View ▸ Show Log.
+        self._log_row = 7
+        self.log_label = label('Log:')
+        self.log_label.grid(row=self._log_row, column=0, sticky='nw', **pad)
+        self.log_box = ScrolledText(frm, height=14, wrap='word', state=DISABLED, bd=1, relief='solid')
+        self.log_box.grid(row=self._log_row, column=1, columnspan=3, sticky='nsew', **pad)
+
+        frm.columnconfigure(1, weight=1)
+
+        # Apply the initial panel states and seed the status line with the
+        # full destination; keep the status in sync when the output path changes.
+        self._apply_db_visibility()
+        self._apply_windows_auth_visibility()
+        self._apply_log_visibility()
+        self.output_path.trace_add('write', lambda *a: self._update_status_idle())
+        self._update_status_idle()
+
+    def _build_db_panel(self, frm) -> None:
         db_frame = tk.Frame(frm, bg='#eef1f5', highlightthickness=1,
                             highlightbackground=_SM_DIVIDER)
         self.db_frame = db_frame
@@ -541,33 +584,6 @@ class CompareApp:
         db_frame.columnconfigure(1, weight=1)
         db_frame.columnconfigure(3, weight=1)
 
-        # Status line — wraps so the full output path is always visible, and
-        # carries run progress/results now that the log is hidden by default.
-        self.status_label = tk.Label(frm, text='', bg=bg, anchor='w', justify='left',
-                                     wraplength=660)
-        self.status_label.grid(row=5, column=0, columnspan=4, sticky='w', padx=8, pady=(2, 2))
-
-        # Filled by a background update check (notify-only; see _check_updates).
-        self.update_label = tk.Label(frm, text='', bg=bg, fg='#3f51b5', anchor='w', cursor='hand2')
-        self.update_label.grid(row=6, column=0, columnspan=4, sticky='w', padx=8, pady=(0, 6))
-
-        # Log pane — hidden by default; toggled via View ▸ Show Log.
-        self._log_row = 7
-        self.log_label = label('Log:')
-        self.log_label.grid(row=self._log_row, column=0, sticky='nw', **pad)
-        self.log_box = ScrolledText(frm, height=14, wrap='word', state=DISABLED, bd=1, relief='solid')
-        self.log_box.grid(row=self._log_row, column=1, columnspan=3, sticky='nsew', **pad)
-
-        frm.columnconfigure(1, weight=1)
-
-        # Apply the initial panel states and seed the status line with the
-        # full destination; keep the status in sync when the output path changes.
-        self._apply_db_visibility()
-        self._apply_windows_auth_visibility()
-        self._apply_log_visibility()
-        self.output_path.trace_add('write', lambda *a: self._update_status_idle())
-        self._update_status_idle()
-
     def _sync_window_size(self) -> None:
         """Recompute window height from which optional panels are open."""
         height = 392
@@ -579,6 +595,9 @@ class CompareApp:
 
     def _apply_db_visibility(self) -> None:
         """Show or hide the Database Options panel and resize the window."""
+        if not self.db_enabled:
+            self._sync_window_size()
+            return
         if self.show_db.get():
             self.db_frame.grid()
         else:
@@ -588,6 +607,8 @@ class CompareApp:
     def _apply_windows_auth_visibility(self) -> None:
         """Show the SQL username/password fields unless Windows integrated
         auth is selected — SQL Server login is the default here."""
+        if not self.db_enabled:
+            return
         widgets = (self.db_user_label, self.db_user_entry,
                    self.db_pass_label, self.db_pass_entry)
         for w in widgets:
@@ -691,23 +712,27 @@ class CompareApp:
         open_browser = self.open_in_browser.get()
 
         # Snapshot DB fields on the UI thread (Tk vars aren't thread-safe)
-        # and remember the one-time setup — never the password.
-        db = {
-            'old_server': self.old_db_server.get().strip(),
-            'old_database': self.old_db_database.get().strip(),
-            'new_server': self.new_db_server.get().strip(),
-            'new_database': self.new_db_database.get().strip(),
-            'windows_auth': self.db_windows_auth.get(),
-            'user': self.db_user.get().strip(),
-            'password': self.db_password.get(),
-        }
-        for key, value in (('old_db_server', db['old_server']),
-                           ('new_db_server', db['new_server']),
-                           ('old_db_database', db['old_database']),
-                           ('new_db_database', db['new_database']),
-                           ('db_windows_auth', db['windows_auth']),
-                           ('db_user', db['user'])):
-            _save_setting(key, value)
+        # and remember the one-time setup — never the password. When the
+        # feature flag is off there is no panel to read: pass no DB config
+        # and leave any previously saved values untouched.
+        db = None
+        if self.db_enabled:
+            db = {
+                'old_server': self.old_db_server.get().strip(),
+                'old_database': self.old_db_database.get().strip(),
+                'new_server': self.new_db_server.get().strip(),
+                'new_database': self.new_db_database.get().strip(),
+                'windows_auth': self.db_windows_auth.get(),
+                'user': self.db_user.get().strip(),
+                'password': self.db_password.get(),
+            }
+            for key, value in (('old_db_server', db['old_server']),
+                               ('new_db_server', db['new_server']),
+                               ('old_db_database', db['old_database']),
+                               ('new_db_database', db['new_database']),
+                               ('db_windows_auth', db['windows_auth']),
+                               ('db_user', db['user'])):
+                _save_setting(key, value)
 
         # Clear log, disable button, show progress in the status line.
         self.log_box.configure(state=NORMAL)

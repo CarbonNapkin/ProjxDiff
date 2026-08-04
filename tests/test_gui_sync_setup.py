@@ -138,3 +138,63 @@ def test_manager_add_group_scans_refreshes_and_keeps_edits(tmp_path):
         assert mgr.user_entries['Jane'].get() == 'Jane Doe <j@x.com>'
     finally:
         root.destroy()
+
+
+# ---------- the enable_db feature flag ----------
+
+def _make_app():
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    return root, gui_mod.CompareApp(root)
+
+
+def test_db_panel_hidden_by_default():
+    root, app = _make_app()
+    try:
+        assert app.db_enabled is False
+        assert not hasattr(app, 'db_frame')
+        assert app.show_db.get() is False
+        # The visibility helpers must be safe no-ops with no panel built.
+        app._apply_db_visibility()
+        app._apply_windows_auth_visibility()
+    finally:
+        root.destroy()
+
+
+def test_db_panel_enabled_by_config_flag():
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        assert app.db_enabled is True
+        assert hasattr(app, 'db_frame')
+        assert app.show_db.get() is True
+    finally:
+        root.destroy()
+
+
+def test_db_panel_auto_enables_for_legacy_saved_server():
+    # Machines that configured a DB server before the flag existed keep
+    # their panel without editing ~/.projxdiff.
+    gui_mod._save_setting('old_db_server', 'sqlserver\\dw')
+    root, app = _make_app()
+    try:
+        assert app.db_enabled is True
+        assert hasattr(app, 'db_frame')
+        assert app.old_db_server.get() == 'sqlserver\\dw'
+    finally:
+        root.destroy()
+
+
+def test_db_panel_explicit_false_beats_saved_server():
+    gui_mod._save_setting('old_db_server', 'sqlserver\\dw')
+    gui_mod._save_setting('enable_db', False)
+    root, app = _make_app()
+    try:
+        assert app.db_enabled is False
+        assert not hasattr(app, 'db_frame')
+    finally:
+        root.destroy()
