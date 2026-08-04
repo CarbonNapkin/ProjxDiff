@@ -12,6 +12,7 @@ import sys
 import threading
 import traceback
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import Tk, StringVar, BooleanVar, END, DISABLED, NORMAL, filedialog, messagebox
@@ -32,6 +33,29 @@ except ImportError:
 
 PROJX_FILETYPES = [('DriveWorks™ project', '*.driveprojx')]
 APP_TITLE = f'Projx Diff {__version__}'
+
+# Shared palette for the Manage Nightly Sync window — a flat, light look that
+# reads as more modern than raw Tk defaults while staying plain-tk (no ttk, so
+# it renders correctly on older macOS Tk too).
+_SM_BG = '#f4f5f7'
+_SM_CARD = '#ffffff'
+_SM_HEADER_BG = '#2b3242'
+_SM_HEADER_FG = '#ffffff'
+_SM_HEADER_SUB = '#aeb6c6'
+_SM_TEXT = '#2b2f36'
+_SM_MUTED = '#8a94a6'
+_SM_DIVIDER = '#e3e6eb'
+_SM_ACCENT = '#2d6cdf'
+_SM_ACCENT_ACT = '#245bc0'
+
+
+def _default_config_dir() -> str:
+    """Sensible starting folder for the sync-config file picker: the standard
+    deployment path when present, else a per-user ProjxArchive, else home."""
+    for candidate in ('C:/ProjxArchive', str(Path.home() / 'ProjxArchive')):
+        if Path(candidate).is_dir():
+            return candidate
+    return str(Path.home())
 
 
 class _QueueWriter:
@@ -152,6 +176,7 @@ class CompareApp:
         under raw names."""
         cfg_path = filedialog.askopenfilename(
             title='Select the nightly sync config',
+            initialdir=_default_config_dir(),
             filetypes=[('Sync config (JSON)', '*.json')])
         if not cfg_path:
             return
@@ -455,10 +480,13 @@ class CompareApp:
 
 
 class _SyncManager:
-    """Toplevel that renders the census triage: pending projects get a
-    Track / Ignore decision, unmapped users get an identity field, and name
-    conflicts are listed with a hint. Saving persists census.json and heals
-    the metrics DB."""
+    """Toplevel census manager: one table of *every* project with its path,
+    last-modified date, last saver, and an inline disposition control; below
+    it, identity fields for unmapped users and any name conflicts. Saving
+    persists census.json and heals the metrics DB."""
+
+    _COLS = ('Project', 'Path', 'Modified', 'Last saved by', 'Disposition')
+    _COL_WEIGHT = (0, 1, 0, 0, 0)  # only the path column absorbs slack
 
     def __init__(self, parent, cfg: dict, cpath: Path, census: dict):
         from . import census as census_mod
@@ -467,90 +495,203 @@ class _SyncManager:
         self.cpath = cpath
         self.census = census
 
-        bg = '#f4f4f4'
         self.top = tk.Toplevel(parent)
         self.top.title('Manage Nightly Sync')
-        self.top.configure(bg=bg)
-        self.top.geometry('640x520')
+        self.top.configure(bg=_SM_BG)
+        self.top.geometry('960x640')
+        self.top.minsize(780, 460)
 
-        # Scrollable body: a canvas hosting a frame, so long triage lists work.
-        canvas = tk.Canvas(self.top, bg=bg, highlightthickness=0)
-        scroll = tk.Scrollbar(self.top, orient='vertical', command=canvas.yview)
-        body = tk.Frame(canvas, bg=bg, padx=14, pady=10)
-        body.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.create_window((0, 0), window=body, anchor='nw')
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side='left', fill='both', expand=True)
-        scroll.pack(side='right', fill='y')
-
-        def heading(text):
-            tk.Label(body, text=text, bg=bg, font=('TkDefaultFont', 12, 'bold'),
-                     anchor='w').pack(fill='x', pady=(10, 2))
-
-        def note(text):
-            tk.Label(body, text=text, bg=bg, fg='#777', justify='left',
-                     anchor='w', wraplength=560).pack(fill='x')
-
-        self.proj_vars: dict[str, StringVar] = {}
-        pending = census_mod.pending_projects(census)
-        heading(f'New projects awaiting disposition ({len(pending)})')
-        if pending:
-            note('Track = archive and measure nightly. Ignore = stop syncing '
-                 '(history already captured is kept).')
-            for name, path in pending:
-                row = tk.Frame(body, bg=bg)
-                row.pack(fill='x', pady=2)
-                var = StringVar(value='pending')
-                self.proj_vars[name] = var
-                tk.Label(row, text=name, bg=bg, width=24, anchor='w',
-                         font=('TkDefaultFont', 11, 'bold')).pack(side='left')
-                for label, val in (('Decide later', 'pending'), ('Track', 'track'),
-                                   ('Ignore', 'ignore')):
-                    tk.Radiobutton(row, text=label, value=val, variable=var,
-                                   bg=bg, highlightthickness=0).pack(side='left')
-                tk.Label(body, text=path, bg=bg, fg='#999', anchor='w').pack(fill='x')
-        else:
-            note('None — every project has a disposition.')
-
-        self.user_entries: dict[str, tk.Entry] = {}
-        unmapped = census_mod.unmapped_users(census)
-        heading(f'Unmapped DriveWorks users ({len(unmapped)})')
-        if unmapped:
-            note('Fill in as  Name <email>  — past metrics recorded under the '
-                 'raw name are updated too.')
-            for raw in unmapped:
-                row = tk.Frame(body, bg=bg)
-                row.pack(fill='x', pady=2)
-                tk.Label(row, text=raw, bg=bg, width=24, anchor='w',
-                         font=('TkDefaultFont', 11, 'bold')).pack(side='left')
-                e = tk.Entry(row, highlightthickness=1, relief='solid', bd=1)
-                e.pack(side='left', fill='x', expand=True)
-                self.user_entries[raw] = e
-        else:
-            note('None — every user name seen so far is mapped.')
-
-        conflicts = census.get('conflicts', [])
-        if conflicts:
-            heading(f'Name conflicts ({len(conflicts)})')
-            note('Two source files share a project name; only the registered '
-                 'path syncs. Fix the share (rename/remove the copy) or add '
-                 'an exclude pattern in the config.')
-            for c in conflicts:
-                tk.Label(body, text=f'{c.get("project", "")}: {c.get("path", "")}  '
-                                    f'(registered: {c.get("registered", "")})',
-                         bg=bg, fg='#999', anchor='w', wraplength=560,
-                         justify='left').pack(fill='x')
-
-        bar = tk.Frame(self.top, bg=bg, pady=8)
-        bar.pack(side='bottom', fill='x')
-        tk.Button(bar, text='Cancel', command=self.top.destroy).pack(side='right', padx=8)
-        tk.Button(bar, text='Save', font=('TkDefaultFont', 12, 'bold'),
-                  command=self._save).pack(side='right')
+        self._build_header()
+        self._build_toolbar()
+        # Bottom-anchored pieces first so the table (packed last) fills the
+        # middle and grows with the window.
+        self._build_footer()
+        self._build_users_and_conflicts()
+        self._build_table()
 
         self.top.transient(parent)
 
+    # ------------------------------------------------------------ sections ----
+
+    def _build_header(self) -> None:
+        header = tk.Frame(self.top, bg=_SM_HEADER_BG)
+        header.pack(side='top', fill='x')
+        tk.Label(header, text='Manage Nightly Sync', bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
+                 font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=18, pady=(12, 0))
+        tk.Label(header, text=f'{self.cfg.get("source_dir", "")}  ·  {self.cpath}',
+                 bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
+                 font=('TkDefaultFont', 9)).pack(anchor='w', padx=18, pady=(1, 12))
+
+    def _build_toolbar(self) -> None:
+        bar = tk.Frame(self.top, bg=_SM_BG)
+        bar.pack(side='top', fill='x', padx=16, pady=(12, 4))
+        tk.Label(bar, text='Filter', bg=_SM_BG, fg=_SM_TEXT).pack(side='left')
+        self.filter_var = StringVar()
+        entry = tk.Entry(bar, textvariable=self.filter_var, highlightthickness=1,
+                         highlightcolor=_SM_ACCENT, relief='solid', bd=1)
+        entry.pack(side='left', fill='x', expand=True, padx=(8, 12))
+        self.filter_var.trace_add('write', lambda *_a: self._apply_filter())
+        self.count_label = tk.Label(bar, text='', bg=_SM_BG, fg=_SM_MUTED)
+        self.count_label.pack(side='right')
+
+    def _build_footer(self) -> None:
+        bar = tk.Frame(self.top, bg=_SM_BG)
+        bar.pack(side='bottom', fill='x', padx=16, pady=(4, 12))
+        tk.Button(bar, text='Save', command=self._save, bg=_SM_ACCENT, fg='#ffffff',
+                  activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
+                  relief='flat', font=('TkDefaultFont', 11, 'bold'),
+                  padx=20, pady=6, cursor='hand2').pack(side='right')
+        tk.Button(bar, text='Cancel', command=self.top.destroy, bg='#e6e8ec',
+                  relief='flat', padx=16, pady=6, cursor='hand2').pack(side='right', padx=8)
+
+    def _build_table(self) -> None:
+        # Real configs always carry source_dir (load_config validates it); guard
+        # anyway so the dialog degrades to '—' metadata rather than crashing.
+        source = Path(self.cfg.get('source_dir', ''))
+
+        outer = tk.Frame(self.top, bg=_SM_CARD, highlightbackground=_SM_DIVIDER,
+                         highlightthickness=1)
+        outer.pack(side='top', fill='both', expand=True, padx=16, pady=(4, 6))
+        canvas = tk.Canvas(outer, bg=_SM_CARD, highlightthickness=0)
+        vs = tk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        table = tk.Frame(canvas, bg=_SM_CARD)
+        table.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        win = canvas.create_window((0, 0), window=table, anchor='nw')
+        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(win, width=e.width))
+        canvas.configure(yscrollcommand=vs.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        vs.pack(side='right', fill='y')
+        # Wheel scroll only while the pointer is over the list, so it never
+        # leaks to the main window after this dialog closes.
+        canvas.bind('<Enter>', lambda _e: canvas.bind_all(
+            '<MouseWheel>', lambda e: canvas.yview_scroll(int(-e.delta / 120), 'units')))
+        canvas.bind('<Leave>', lambda _e: canvas.unbind_all('<MouseWheel>'))
+
+        # Header row + a hairline divider under it.
+        for col, (title, weight) in enumerate(zip(self._COLS, self._COL_WEIGHT)):
+            tk.Label(table, text=title.upper(), bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                     font=('TkDefaultFont', 8, 'bold')).grid(
+                row=0, column=col, sticky='w', padx=10, pady=(10, 4))
+            table.columnconfigure(col, weight=weight)
+        tk.Frame(table, bg=_SM_DIVIDER, height=1).grid(
+            row=1, column=0, columnspan=len(self._COLS), sticky='ew', padx=6)
+
+        self.proj_vars: dict[str, StringVar] = {}
+        self._row_cells: dict[str, list] = {}
+        self._row_search: dict[str, str] = {}
+        self._names = sorted(self.census['projects'].keys())
+
+        for i, name in enumerate(self._names):
+            entry = self.census['projects'][name]
+            rel = entry.get('path', '')
+            modified, saver = self._file_meta(source / rel)
+            var = StringVar(value=entry.get('disposition', 'pending'))
+            self.proj_vars[name] = var
+
+            r = i + 2
+            cells = [
+                tk.Label(table, text=name, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
+                         font=('TkDefaultFont', 10, 'bold')),
+                tk.Label(table, text=self._ellipsize(rel, 54), bg=_SM_CARD, fg=_SM_MUTED, anchor='w'),
+                tk.Label(table, text=modified, bg=_SM_CARD, fg=_SM_TEXT, anchor='w'),
+                tk.Label(table, text=saver, bg=_SM_CARD, fg=_SM_TEXT, anchor='w'),
+                self._disposition_menu(table, var),
+            ]
+            for col, widget in enumerate(cells):
+                widget.grid(row=r, column=col, sticky='w', padx=10, pady=4)
+            self._row_cells[name] = cells
+            self._row_search[name] = f'{name} {rel} {saver}'.lower()
+
+        self._update_count(len(self._names), len(self._names))
+
+    def _disposition_menu(self, parent, var: StringVar) -> tk.OptionMenu:
+        om = tk.OptionMenu(parent, var, *self._census_mod.DISPOSITIONS)
+        om.configure(bg=_SM_CARD, activebackground=_SM_BG, relief='solid', bd=1,
+                     highlightthickness=0, font=('TkDefaultFont', 9), width=8, anchor='w',
+                     cursor='hand2')
+        om['menu'].configure(bg=_SM_CARD, activebackground=_SM_ACCENT,
+                             activeforeground='#ffffff')
+        return om
+
+    def _build_users_and_conflicts(self) -> None:
+        cm = self._census_mod
+        wrap = tk.Frame(self.top, bg=_SM_BG)
+        wrap.pack(side='bottom', fill='x', padx=16, pady=(0, 2))
+
+        self.user_entries: dict[str, tk.Entry] = {}
+        unmapped = cm.unmapped_users(self.census)
+        tk.Label(wrap, text=f'UNMAPPED USERS ({len(unmapped)})', bg=_SM_BG, fg=_SM_MUTED,
+                 anchor='w', font=('TkDefaultFont', 8, 'bold')).pack(fill='x', pady=(6, 2))
+        if unmapped:
+            tk.Label(wrap, text='Fill in as  Name <email>  — leave blank to keep a shared '
+                               'account unattributed. Past metrics under the raw name are healed.',
+                     bg=_SM_BG, fg=_SM_MUTED, anchor='w', justify='left',
+                     wraplength=880).pack(fill='x')
+            for raw in unmapped:
+                row = tk.Frame(wrap, bg=_SM_BG)
+                row.pack(fill='x', pady=2)
+                tk.Label(row, text=raw, bg=_SM_BG, fg=_SM_TEXT, width=22, anchor='w',
+                         font=('TkDefaultFont', 10, 'bold')).pack(side='left')
+                e = tk.Entry(row, highlightthickness=1, highlightcolor=_SM_ACCENT,
+                             relief='solid', bd=1)
+                e.pack(side='left', fill='x', expand=True)
+                self.user_entries[raw] = e
+        else:
+            tk.Label(wrap, text='All user names are mapped.', bg=_SM_BG, fg=_SM_MUTED,
+                     anchor='w').pack(fill='x')
+
+        conflicts = self.census.get('conflicts', [])
+        if conflicts:
+            tk.Label(wrap, text=f'NAME CONFLICTS ({len(conflicts)})', bg=_SM_BG, fg='#b4462d',
+                     anchor='w', font=('TkDefaultFont', 8, 'bold')).pack(fill='x', pady=(8, 2))
+            tk.Label(wrap, text='Two source files share a name; only the registered path syncs. '
+                               'Rename/remove the copy on the share, or add an exclude pattern.',
+                     bg=_SM_BG, fg=_SM_MUTED, anchor='w', justify='left',
+                     wraplength=880).pack(fill='x')
+            for c in conflicts:
+                tk.Label(wrap, text=f'· {c.get("project", "")}: {c.get("path", "")}  '
+                                    f'(registered: {c.get("registered", "")})',
+                         bg=_SM_BG, fg=_SM_MUTED, anchor='w', wraplength=880,
+                         justify='left').pack(fill='x')
+
+    # ------------------------------------------------------------- helpers ----
+
+    def _file_meta(self, abs_path: Path) -> tuple:
+        """(modified-date, last-saver-name) for a project's source file. Reads
+        the last saver straight from the .driveprojx; '—' when unavailable."""
+        modified, saver = '—', '—'
+        try:
+            if abs_path.is_file():
+                modified = datetime.fromtimestamp(abs_path.stat().st_mtime).strftime('%Y-%m-%d')
+                display, _email = self._census_mod.read_last_saver_from_zip(abs_path)
+                if display:
+                    ident = self.census['users'].get(display) or display
+                    saver = ident.split('<')[0].strip() or display
+        except Exception:
+            pass
+        return modified, saver
+
+    @staticmethod
+    def _ellipsize(text: str, limit: int) -> str:
+        """Keep the informative tail (folder + filename) of a long path."""
+        return text if len(text) <= limit else '…' + text[-(limit - 1):]
+
+    def _apply_filter(self) -> None:
+        query = self.filter_var.get().strip().lower()
+        shown = 0
+        for name in self._names:
+            match = query in self._row_search[name] if query else True
+            for widget in self._row_cells[name]:
+                (widget.grid if match else widget.grid_remove)()
+            shown += match
+        self._update_count(shown, len(self._names))
+
+    def _update_count(self, shown: int, total: int) -> None:
+        self.count_label.configure(
+            text=f'{total} projects' if shown == total else f'{shown} of {total} projects')
+
     def _save(self) -> None:
-        census_mod = self._census_mod
+        cm = self._census_mod
         for name, var in self.proj_vars.items():
             self.census['projects'][name]['disposition'] = var.get()
         mapped = 0
@@ -561,14 +702,14 @@ class _SyncManager:
                 mapped += 1
 
         try:
-            census_mod.save_census(self.cpath, self.census)
+            cm.save_census(self.cpath, self.census)
             healed = 0
             db_path = Path(self.cfg['data_dir']) / 'metrics.sqlite'
             if mapped and db_path.is_file():
                 import sqlite3
                 conn = sqlite3.connect(db_path, isolation_level=None)
                 try:
-                    healed = census_mod.heal_metrics(conn, self.census)
+                    healed = cm.heal_metrics(conn, self.census)
                 finally:
                     conn.close()
         except Exception as e:

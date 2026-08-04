@@ -4,6 +4,19 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-08-04
+
+### Changed
+
+- **Manage Nightly Sync shows every project, not just pending ones.** The
+  Tools ▸ Manage Nightly Sync dialog now lists all track/pending/ignore
+  projects in one table — name, source path, last-modified date, last saver,
+  and an inline disposition dropdown — with a filter box and a flat, lighter
+  layout. Previously only newly-discovered (pending) projects appeared, so an
+  already-triaged config looked empty and confusing. The config-file picker
+  now opens at `C:\ProjxArchive` (falling back to a per-user `ProjxArchive`,
+  then the home folder). Plain-tk throughout, so it renders on older macOS Tk.
+
 ## [1.2.0] - 2026-08-04
 
 ### Added
