@@ -36,6 +36,8 @@ UninstallDisplayIcon={app}\ProjxDiff.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; 64-bit install mode so the default lands in Program Files, not (x86).
+ArchitecturesInstallIn64BitMode=x64compatible
 ; Admin install to Program Files by default; the dialog lets a non-admin
 ; choose a per-user install instead.
 PrivilegesRequiredOverridesAllowed=dialog
