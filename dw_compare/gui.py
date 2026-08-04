@@ -58,6 +58,28 @@ def _default_config_dir() -> str:
     return str(Path.home())
 
 
+def _resource_path(rel: str) -> Path:
+    """Locate a bundled resource in both dev and PyInstaller-frozen runs.
+    Frozen builds unpack datas under sys._MEIPASS; in dev, assets/ sits next to
+    the repo root (one level above this package)."""
+    base = getattr(sys, '_MEIPASS', None) or Path(__file__).resolve().parent.parent
+    return Path(base) / rel
+
+
+def _set_window_icon(win) -> None:
+    """Set the live window/taskbar icon from assets/icon.png. No-op when the
+    asset is absent (before branding lands) or the Tk build can't read PNGs
+    (older macOS Tk) — the packaged .exe/.app icon is handled by the spec."""
+    try:
+        png = _resource_path('assets/icon.png')
+        if png.is_file():
+            img = tk.PhotoImage(file=str(png))
+            win.iconphoto(True, img)   # True → default for all toplevels too
+            win._icon_ref = img        # keep a reference so Tk doesn't GC it
+    except Exception:
+        pass
+
+
 class _QueueWriter:
     """File-like object that pushes writes onto a queue."""
 
@@ -77,6 +99,7 @@ class CompareApp:
     def __init__(self, root: Tk):
         self.root = root
         root.title(APP_TITLE)
+        _set_window_icon(root)
         # Compact by default; the log pane is hidden (View ▸ Show Log) and the
         # window grows to fit it when shown.
         self._geom_compact = '760x392'

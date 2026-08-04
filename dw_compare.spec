@@ -10,8 +10,9 @@
 #   pyinstaller dw_compare.spec --clean --noconfirm
 #
 # Optional icon files (skipped silently if absent):
-#   assets/icon.ico  (Windows)
-#   assets/icon.icns (macOS)
+#   assets/icon.ico  (Windows .exe icon)
+#   assets/icon.icns (macOS .app icon)
+#   assets/icon.png  (live window/taskbar icon, loaded at runtime by gui.py)
 
 import os
 import sys
@@ -38,6 +39,13 @@ if sys.platform == 'win32' and os.path.isfile(icon_ico):
     chosen_icon = icon_ico
 elif sys.platform == 'darwin' and os.path.isfile(icon_icns):
     chosen_icon = icon_icns
+
+# Bundle the runtime window icon (PNG) so the live app can load it via
+# gui._resource_path at start-up. Skipped silently when the asset is absent.
+_datas = []
+icon_png = os.path.join('assets', 'icon.png')
+if os.path.isfile(icon_png):
+    _datas.append((icon_png, 'assets'))
 
 # Windows: embed a version resource so the .exe's file properties match the
 # in-app version. Written in PyInstaller's version-file format (ignored on
@@ -70,7 +78,7 @@ a = Analysis(
     ['run_dw_compare.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=_datas,
     hiddenimports=['dw_compare.gui', 'dw_compare.sync', 'dw_compare.census',
                    'dw_compare.dashboard'],
     hookspath=[],

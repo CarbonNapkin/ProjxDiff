@@ -4,6 +4,16 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.4] - 2026-08-04
+
+### Added
+
+- **App-icon plumbing.** The live window/taskbar icon is loaded at start-up from
+  `assets/icon.png` (bundled into frozen builds), complementing the packaged
+  `.exe`/`.app` icons the build spec already picks up from `assets/icon.ico` and
+  `assets/icon.icns`. All are optional and skipped silently until the branding
+  assets are added to the repo.
+
 ## [1.2.3] - 2026-08-04
 
 ### Changed
