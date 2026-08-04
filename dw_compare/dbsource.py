@@ -77,6 +77,44 @@ def _encode_guid(norm32: str, encoding: str) -> str:
     return norm32
 
 
+def _guid_variants(norm_id: str) -> list:
+    """Parameter forms worth sending for one normalised id: the bare hex
+    form (plain nvarchar id columns), and — if it's 32 hex chars — the
+    canonical hyphenated literal. Used by the CAST-based queries
+    (debug_lookup and the Data-blob fetchers), where the column side is
+    cast to nvarchar so both forms are safe to send together."""
+    variants = [norm_id]
+    if _GUID32.match(norm_id):
+        variants.append(_hyphenated(norm_id))
+    return variants
+
+
+def _classify_connect_error(e: Exception) -> str:
+    """Turn a raw pyodbc/ODBC exception into one short, actionable line for
+    the person running the tool. The full technical text is never hidden —
+    callers still log it alongside this — this is just what a non-DBA
+    should read FIRST to know what to actually go check.
+    """
+    text = str(e)
+    low = text.lower()
+    if any(s in low for s in (
+        "no such host is known", "tcp provider", "target machine actively refused",
+        "network-related", "timeout expired", "could not open a connection",
+    )):
+        return ("Server not found or not reachable — check the server name/instance "
+                "(e.g. SERVER\\INSTANCE) and that you're on the right network/VPN.")
+    if "login failed" in low or re.search(r"\b28000\b", text):
+        return "Login failed — check the username and password, or try Windows Authentication instead."
+    if "cannot open database" in low:
+        return "Server connected, but that database name wasn't found there — check the database name."
+    if "im002" in low or "data source name not found" in low:
+        return "No SQL Server ODBC driver found — install 'ODBC Driver 17 for SQL Server'."
+    if "ssl provider" in low or "certificate" in low:
+        return ("TLS/certificate error connecting to the server — this build already trusts "
+                "self-signed certs, so this is likely a network-level TLS block.")
+    return text  # unrecognized — surface the raw message rather than hiding it
+
+
 def _quote_ident(name: str) -> str:
     """Validate then bracket-quote a SQL identifier."""
     if not name or not _IDENT_RE.match(name):
@@ -127,6 +165,7 @@ class DwDatabase:
         self._conn = None
         self._cache: dict = {}        # (schema, table, id_col, name_col) -> {id: name}
         self._dead = False            # set after a failure; stops retry storms
+        self.last_error = ""          # friendly one-line summary of the last connect failure
 
     # ---------- connection ----------
 
@@ -159,16 +198,20 @@ class DwDatabase:
         try:
             import pyodbc
         except ImportError:
-            print(f"  [!] [{self.label}] pyodbc not installed -- ID names will stay as raw GUIDs.")
+            self.last_error = "pyodbc is not installed -- ID names will stay as raw GUIDs."
+            print(f"  [!] [{self.label}] {self.last_error}")
             self._dead = True
             return False
         try:
             conn = pyodbc.connect(self._build_conn_str(), timeout=self.timeout, readonly=True)
             conn.timeout = self.timeout
             self._conn = conn
+            self.last_error = ""
             return True
         except Exception as e:
-            print(f"  [!] [{self.label}] Could not connect: {e}")
+            self.last_error = _classify_connect_error(e)
+            print(f"  [!] [{self.label}] {self.last_error}")
+            print(f"  [!] [{self.label}] Full error: {e}")
             print(f"  [!] [{self.label}] Continuing with unresolved IDs.")
             self._dead = True
             return False
@@ -311,6 +354,125 @@ class DwDatabase:
                     cache[requested] = (
                         "" if row[1] is None else str(row[1])).strip()
 
+    def debug_lookup(self, table: str, id_col: str, name_col: str, one_id: str, schema: str = "dbo") -> dict:
+        """Diagnostic single-id lookup for validating a table/column guess
+        against one id you already know is really in the database (e.g.
+        one you pulled directly in SSMS). Unlike lookup()/_select(), this
+        does NOT swallow query errors - it reports the real SQL Server
+        message, plus the exact SQL and parameter forms tried, so a bad
+        table/column guess and an actual bug look different from here."""
+        norm = _norm_id(one_id)
+        variants = _guid_variants(norm)
+        info = {"normalized_id": norm, "variants_tried": variants, "sql": "", "raw_rows": [], "error": ""}
+
+        if not self.connect():
+            info["error"] = "Could not connect (see server console for the pyodbc error)."
+            return info
+
+        try:
+            t = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+            ic, nc = _quote_ident(id_col), _quote_ident(name_col)
+        except ValueError as e:
+            info["error"] = str(e)
+            return info
+
+        marks = ",".join("?" * len(variants))
+        sql = f"SELECT CAST({ic} AS nvarchar(64)), {nc} FROM {t} WHERE CAST({ic} AS nvarchar(64)) IN ({marks})"
+        info["sql"] = sql
+        try:
+            cur = self._conn.cursor()
+            cur.execute(sql, variants)
+            rows = cur.fetchall()
+            cur.close()
+            info["raw_rows"] = [(_norm_id(r[0]), "" if r[1] is None else str(r[1])) for r in rows]
+        except Exception as e:
+            info["error"] = str(e)
+        return info
+
+
+    # ---------- discovery ----------
+    # Used by `--db-explore` to find which tables actually hold the ID -> name
+    # mapping, without guessing at schema.
+
+    def fetch_captured_property_names(
+        self,
+        ccrefs: Iterable,
+        table: str = "CapturedComponents",
+        id_col: str = "Id",
+        data_col: str = "Data",
+        schema: str = "dbo",
+    ) -> dict:
+        """For each given CCRef (a captured file), fetch and decode its own
+        Data blob and merge every named property/entity it defines into one
+        combined {norm(id): name} dict.
+
+        This is the real source of D1@Sketch1-style names, confirmed
+        against real project data: CapturedComponents.Path only names the
+        captured file itself; the file's own Data column is a small
+        embedded XML document naming everything captured INSIDE it
+        (matching CPRef/CERef). Uses the same table CapturedComponents
+        already resolves model names from, just a different column - no
+        separate table guess needed for this part.
+        """
+        wanted = {_norm_id(c) for c in ccrefs if c}
+        if not wanted:
+            return {}
+
+        t = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+        ic, dc = _quote_ident(id_col), _quote_ident(data_col)
+        variants = sorted({v for i in wanted for v in _guid_variants(i)})
+
+        from . import components as _components  # local import: keep this module DB-only otherwise
+
+        names: dict = {}
+        for i in range(0, len(variants), _CHUNK):
+            chunk = variants[i:i + _CHUNK]
+            marks = ",".join("?" * len(chunk))
+            sql = f"SELECT CAST({ic} AS nvarchar(64)), {dc} FROM {t} WHERE CAST({ic} AS nvarchar(64)) IN ({marks})"
+            for row in self._select(sql, (chunk,)):
+                if row[1] is None:
+                    continue
+                names.update(_components.parse_captured_data(row[1]))
+        return names
+
+    def fetch_captured_property_names_and_types(
+        self,
+        ccrefs: Iterable,
+        table: str = "CapturedComponents",
+        id_col: str = "Id",
+        data_col: str = "Data",
+        schema: str = "dbo",
+    ) -> tuple:
+        """Same source as fetch_captured_property_names (each CCRef's own
+        Data blob), but also decodes each element's T attribute - a stable,
+        per-category type-classification GUID (see
+        components.TYPE_GUID_KIND) - alongside its name, in the same query
+        pass rather than fetching and decoding the same rows twice.
+        Returns (names, type_guids), each {norm(id): str}.
+        """
+        wanted = {_norm_id(c) for c in ccrefs if c}
+        if not wanted:
+            return {}, {}
+
+        t = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+        ic, dc = _quote_ident(id_col), _quote_ident(data_col)
+        variants = sorted({v for i in wanted for v in _guid_variants(i)})
+
+        from . import components as _components  # local import: keep this module DB-only otherwise
+
+        names: dict = {}
+        type_guids: dict = {}
+        for i in range(0, len(variants), _CHUNK):
+            chunk = variants[i:i + _CHUNK]
+            marks = ",".join("?" * len(chunk))
+            sql = f"SELECT CAST({ic} AS nvarchar(64)), {dc} FROM {t} WHERE CAST({ic} AS nvarchar(64)) IN ({marks})"
+            for row in self._select(sql, (chunk,)):
+                if row[1] is None:
+                    continue
+                names.update(_components.parse_captured_data(row[1]))
+                type_guids.update(_components.parse_captured_types(row[1]))
+        return names, type_guids
+
     # ---------- discovery ----------
     # Used by `--db-explore` to find which tables actually hold the ID -> name
     # mapping, without guessing at schema.
@@ -349,7 +511,12 @@ class DwDatabase:
         for (s, t), cols in sorted(by_table.items()):
             names = [c for c, _ in cols]
             id_cols = [c for c in names if re.search(r"(^|_)(id|guid|uniqueid)$", c, re.I)]
-            name_cols = [c for c in names if re.search(r"name|title|caption", c, re.I)]
+            # DriveWorks CapturedComponents-style tables label things with a
+            # file Path rather than a Name (dbo.CapturedComponents: Id
+            # uniqueidentifier, Path nvarchar) -- "path" belongs alongside
+            # name/title/caption or perfectly good mapping tables stay
+            # invisible to discovery.
+            name_cols = [c for c in names if re.search(r"name|title|caption|path|filename|description", c, re.I)]
             if id_cols and name_cols:
                 out.append({"schema": s, "table": t, "id_cols": id_cols, "name_cols": name_cols})
         return out

@@ -12,7 +12,10 @@ from .comparers import (
     compare_variables,
     compare_constants,
     compare_calc_tables,
+    compare_component_sets,
+    compare_models,
     compare_component_tasks,
+    compare_property_rules,
     compare_documents,
     compare_lookup_tables,
     compare_data_tables,
@@ -34,14 +37,36 @@ def _safe(fn, *args):
 
 
 def generate_html_report(old_proj: DWProject, new_proj: DWProject,
-                         old_name: str, new_name: str) -> str:
-    """Generate comprehensive HTML comparison report"""
+                         old_name: str, new_name: str,
+                         old_resolved: dict = None, new_resolved: dict = None,
+                         old_prop_resolved: dict = None, new_prop_resolved: dict = None,
+                         old_prop_types: dict = None, new_prop_types: dict = None) -> str:
+    """Generate comprehensive HTML comparison report.
+
+    old_resolved/new_resolved: {norm(id): name} for CCRef/TrId -> readable
+    model name, from components.resolve_names() against a group database.
+    old_prop_resolved/new_prop_resolved: {norm(id): name} for CPRef/CERef ->
+    readable D1@Sketch1-style property name, from decoding
+    CapturedComponents.Data. old_prop_types/new_prop_types: {norm(id):
+    type_guid} from the SAME Data blobs' T attribute — the authoritative
+    Dimension/Feature/Instance/Configuration classification for the Rule
+    Changes Type column (see components.TYPE_GUID_KIND). All six are
+    optional — pass None/{} (the default) when no database connection is
+    available; the Models and Rule Changes sections still render, just
+    with raw GUIDs instead of names and a best-effort Type guess instead
+    of the authoritative one, matching the tool's existing
+    warn-and-continue behaviour.
+    """
 
     summary = {'added': 0, 'removed': 0, 'modified': 0, 'unchanged': 0}
     section_defs = [
         ('Variables', compare_variables, old_proj.variables, new_proj.variables),
         ('Constants', compare_constants, old_proj.constants, new_proj.constants),
         ('Calculation Tables', compare_calc_tables, old_proj.calc_tables, new_proj.calc_tables),
+        ('Component Sets', compare_component_sets,
+         {cs.name: cs for cs in old_proj.component_index.sets.values()},
+         {cs.name: cs for cs in new_proj.component_index.sets.values()}),
+        ('Models', compare_models, old_resolved or {}, new_resolved or {}),
         ('Component Tasks', compare_component_tasks, old_proj.component_tasks, new_proj.component_tasks),
         ('Documents', compare_documents, old_proj.documents, new_proj.documents),
         ('Lookup Tables', compare_lookup_tables, old_proj.lookup_tables, new_proj.lookup_tables),
@@ -54,6 +79,14 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
     for _title, _fn, _old, _new in section_defs:
         _html, _stats = _safe(_fn, _old, _new)
         sections.append((_title, _html, _stats))
+
+    # Rule Changes takes eight args (two indexes, four resolved-name dicts,
+    # two type-guid dicts), not the generic (old_data, new_data) shape the
+    # loop above uses.
+    _html, _stats = _safe(compare_property_rules, old_proj.component_index, new_proj.component_index,
+                           old_resolved or {}, new_resolved or {}, old_prop_resolved or {}, new_prop_resolved or {},
+                           old_prop_types or {}, new_prop_types or {})
+    sections.insert(5, ('Rule Changes', _html, _stats))  # right after Models
 
     # Aggregate summary
     for _, _, stats in sections:
@@ -271,6 +304,25 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         .section-content > table:first-child th,
         .section-content > table:only-child th {{ top: 0; }}
 
+        /* Draggable column-resize handle — a thin strip on each th's right
+           edge, sitting inside the sticky header (sticky is a positioning
+           context too, so this anchors correctly without extra markup). */
+        th .col-resizer {{
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+            user-select: none;
+            z-index: 3;
+        }}
+        th .col-resizer:hover, th .col-resizer.resizing {{
+            background: #3f51b5;
+            opacity: 0.5;
+        }}
+        body.col-resizing, body.col-resizing * {{ cursor: col-resize !important; user-select: none !important; }}
+
         tbody tr:hover {{ background: #eef1f5; }}
         tr.added {{ background: var(--added-bg); }}
         tr.added:hover {{ background: var(--added-bg-strong); }}
@@ -328,6 +380,23 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             max-width: min(60vw, 720px);
             line-height: 1.35;
         }}
+
+        /* Rule Changes (driven-property diffs): the formula is the whole
+           point, so it gets most of the width; Placement/Type/Property/
+           Status are identity columns and stay compact. table-layout:
+           fixed makes the percentages below actually apply. */
+        table.rule-changes {{ table-layout: fixed; }}
+        table.rule-changes th:nth-child(1), table.rule-changes td:nth-child(1) {{
+            width: 14%; overflow-wrap: anywhere;
+        }}
+        table.rule-changes th:nth-child(2), table.rule-changes td:nth-child(2) {{ width: 8%; }}
+        table.rule-changes th:nth-child(3), table.rule-changes td:nth-child(3) {{
+            width: 10%; overflow-wrap: anywhere;
+        }}
+        table.rule-changes th:nth-child(4), table.rule-changes td:nth-child(4) {{ width: 8%; }}
+        table.rule-changes th:nth-child(5), table.rule-changes td:nth-child(5) {{ width: 30%; }}
+        table.rule-changes th:nth-child(6), table.rule-changes td:nth-child(6) {{ width: 30%; }}
+        table.rule-changes .formula {{ max-width: none; }}
 
         span.added {{
             background: #b6e8c1;
@@ -407,7 +476,24 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             const showModified = document.getElementById('showModified').checked;
             const showUnchanged = document.getElementById('showUnchanged').checked;
             const searchText = document.getElementById('searchBox').value.toLowerCase().trim();
-            
+
+            // A section with nothing added/removed/modified (e.g. Component
+            // Sets when nothing changed) is "quiet" and hidden entirely by a
+            // separate toggle ("Show unchanged sections"), so ticking
+            // "Unchanged rows" alone wouldn't reveal it. Keep them in sync
+            // and open the section, so checking "Unchanged rows" reveals it
+            // as expected instead of silently doing nothing.
+            const quietBox = document.getElementById('showQuietSections');
+            if (showUnchanged && !quietBox.checked) {
+                quietBox.checked = true;
+            }
+            document.body.classList.toggle('hide-quiet', !quietBox.checked);
+            if (showUnchanged) {
+                document.querySelectorAll('.section[data-quiet="1"]').forEach(
+                    sec => sec.classList.remove('collapsed')
+                );
+            }
+
             document.querySelectorAll('tbody tr').forEach(row => {
                 // Skip empty placeholder rows
                 if (row.querySelector('.empty')) return;
@@ -492,10 +578,72 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             });
         }
 
+        function initColumnResize() {{
+            document.querySelectorAll('table').forEach(table => {{
+                const headerRow = table.querySelector('thead tr');
+                if (!headerRow) return;
+                const ths = Array.from(headerRow.children);
+                ths.forEach((th, i) => {{
+                    if (i === ths.length - 1) return;  // last column fills remaining space
+                    const handle = document.createElement('div');
+                    handle.className = 'col-resizer';
+                    th.appendChild(handle);
+
+                    handle.addEventListener('mousedown', e => {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const startX = e.clientX;
+                        // Freeze every column's CURRENT rendered width as an
+                        // inline px value before switching to fixed layout,
+                        // so dragging one column doesn't reflow the rest of
+                        // the table. Measuring here (not at page load) means
+                        // this works correctly even for tables inside a
+                        // collapsed/hidden section, since it's only measured
+                        // once the user can actually see and click it.
+                        table.style.tableLayout = 'fixed';
+                        ths.forEach(h => {{ h.style.width = h.offsetWidth + 'px'; }});
+                        const startWidth = th.offsetWidth;
+                        // The table itself was still CSS width:100% - with
+                        // every column now pinned to an explicit px width,
+                        // that 100% constraint forced the browser to
+                        // proportionally stretch/shrink every OTHER column
+                        // to keep the total at 100% whenever the dragged
+                        // one changed (this is what made columns to the
+                        // LEFT appear to grow when dragging left). Freezing
+                        // the table's own width in px too, and adjusting it
+                        // by the same delta as the dragged column, means
+                        // only that one column ever changes - the table
+                        // grows/shrinks instead of redistributing.
+                        const startTableWidth = table.offsetWidth;
+                        table.style.width = startTableWidth + 'px';
+                        handle.classList.add('resizing');
+                        document.body.classList.add('col-resizing');
+
+                        function onMove(ev) {{
+                            const delta = ev.clientX - startX;
+                            const newWidth = Math.max(40, startWidth + delta);
+                            const actualDelta = newWidth - startWidth;
+                            th.style.width = newWidth + 'px';
+                            table.style.width = (startTableWidth + actualDelta) + 'px';
+                        }}
+                        function onUp() {{
+                            document.removeEventListener('mousemove', onMove);
+                            document.removeEventListener('mouseup', onUp);
+                            handle.classList.remove('resizing');
+                            document.body.classList.remove('col-resizing');
+                        }}
+                        document.addEventListener('mousemove', onMove);
+                        document.addEventListener('mouseup', onUp);
+                    }});
+                }});
+            }});
+        }}
+
         // Default: hide sections with no changes; user can toggle them back on.
         applySectionVisibility();
         applyLookupRowVisibility();
         filterRows();
+        initColumnResize();
     </script>
     <footer style="margin-top:24px;padding-top:12px;border-top:1px solid #e3e5e9;color:#888;font-size:12px;text-align:center;">
         Projx Diff v''' + __version__ + ''' &middot;

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 import json
+import os
 import argparse
 import webbrowser
 import zipfile
@@ -146,6 +147,69 @@ def find_project_folders() -> tuple[Path, Path] | None:
     return None
 
 
+def resolve_db_names(label: str, server: str, database: str, index,
+                     user: str = '', password: str = '', sql_auth: bool = False):
+    """Resolve component/model names (CCRef/TrId), property names
+    (CPRef/CERef), and property TYPES for one side of the diff against a
+    DriveWorks group database. Returns
+    (resolved, prop_resolved, prop_types, error) — error is None when a
+    database was supplied and connected (even if it resolved 0 ids — that's
+    not a connection failure), or a short, actionable message when the
+    connection itself failed (see dbsource._classify_connect_error).
+    Returns ({}, {}, {}, None) — not an error — when server/database are
+    blank, since that just means this side wasn't configured to use a
+    database. prop_types is {norm(id): type_guid}, the authoritative signal
+    for the Rule Changes Type column (see components.TYPE_GUID_KIND). This
+    is the shared primitive behind both the CLI's --old-db-*/--new-db-*
+    flags and the GUI's database panel."""
+    if not server or not database:
+        return {}, {}, {}, None
+
+    from . import dbsource, idmap, components
+
+    db = dbsource.DwDatabase(label=label, server=server, database=database,
+                             user=user, password=password, trusted=not sql_auth)
+    # Connect eagerly so a failure is caught deterministically here and
+    # reported clearly, instead of surfacing later as "0 ids resolved" with
+    # the real reason buried in the log.
+    if not db.connect():
+        return {}, {}, {}, db.last_error or "Could not connect to the database."
+
+    resolver = idmap.IdResolver(db=db)
+    resolved = components.resolve_names(index, resolver)
+
+    ccrefs = set(index.trid_to_ccref.values())
+    if ccrefs:
+        prop_resolved, prop_types = db.fetch_captured_property_names_and_types(ccrefs)
+    else:
+        prop_resolved, prop_types = {}, {}
+    db.close()
+    print(f"  [{label}] {resolver.report().strip()}")
+    return resolved, prop_resolved, prop_types, None
+
+
+def resolve_side_names(side: str, args, index):
+    """CLI wrapper around resolve_db_names: reads the --{side}-db-* argparse
+    fields and the DW_SQL_PASSWORD_{SIDE} env var (never a command-line
+    password — see dbsource.py)."""
+    server = getattr(args, f'{side}_db_server')
+    database = getattr(args, f'{side}_db_database')
+    if not server or not database:
+        return {}, {}, {}, None
+
+    sql_auth = getattr(args, f'{side}_db_sql_auth')
+    user = getattr(args, f'{side}_db_user')
+    password = os.environ.get(f'DW_SQL_PASSWORD_{side.upper()}', '') if sql_auth else ''
+    if sql_auth and not password:
+        error = (f"--{side}-db-sql-auth given but DW_SQL_PASSWORD_{side.upper()} "
+                 f"is not set — skipping database name resolution for this side.")
+        print(f"  ⚠ [{side}] {error}")
+        return {}, {}, {}, error
+
+    return resolve_db_names(side, server, database, index,
+                            user=user, password=password, sql_auth=sql_auth)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Compare two DriveWorks™ projects and generate HTML report',
@@ -197,6 +261,26 @@ Examples:
     parser.add_argument('--add-source', action='append', default=[], metavar='NAME=FOLDER',
                        help='(with --census) add an environment group to the config, '
                             'then scan it')
+    # Optional group-database connections, one per side, for resolving
+    # CCRef/TrId component ids and CPRef/CERef property ids to readable
+    # names (Models and Rule Changes sections). Either side may be omitted;
+    # those sections then fall back to raw GUIDs. Windows integrated auth
+    # is the default — no password is ever accepted on the command line
+    # (see dbsource.py); use --old-db-sql-auth / --new-db-sql-auth plus the
+    # DW_SQL_PASSWORD_OLD / DW_SQL_PASSWORD_NEW env vars for SQL auth.
+    for side in ('old', 'new'):
+        parser.add_argument(f'--{side}-db-server', default='',
+                           help=f'SQL Server for the {side} project\'s group database '
+                                f'(e.g. SQLBOX\\DWGROUP)')
+        parser.add_argument(f'--{side}-db-database', default='',
+                           help=f'Group database name for the {side} project')
+        parser.add_argument(f'--{side}-db-user', default='',
+                           help=f'SQL Server login for the {side} project '
+                                f'(only with --{side}-db-sql-auth)')
+        parser.add_argument(f'--{side}-db-sql-auth', action='store_true',
+                           help=f'Use SQL Server auth for the {side} project '
+                                'instead of Windows integrated auth')
+
     parser.add_argument('-V', '--version', action='version',
                        version=f'Projx Diff {__version__}')
 
@@ -279,12 +363,29 @@ Examples:
                            else 'dw_comparison.html')
 
     html_path = None
+    old_db_error = new_db_error = None
     if args.format in ('html', 'both'):
+        old_resolved, old_prop_resolved, old_prop_types, old_db_error = \
+            resolve_side_names('old', args, old_proj.component_index)
+        new_resolved, new_prop_resolved, new_prop_types, new_db_error = \
+            resolve_side_names('new', args, new_proj.component_index)
+
         html_path = args.output
         print("Generating comparison report...")
-        html = generate_html_report(old_proj, new_proj, old_name, new_name)
+        html = generate_html_report(old_proj, new_proj, old_name, new_name,
+                                    old_resolved, new_resolved,
+                                    old_prop_resolved, new_prop_resolved,
+                                    old_prop_types, new_prop_types)
         html_path.write_text(html, encoding='utf-8')
         print(f"✅ Report saved to: {html_path}")
+        # A DB connection failure doesn't stop the report (it still generates
+        # with raw GUIDs), so restate it plainly next to the success message.
+        if old_db_error:
+            print(f"⚠️  Old-side database: {old_db_error}")
+        if new_db_error:
+            print(f"⚠️  New-side database: {new_db_error}")
+        if old_db_error or new_db_error:
+            print("   Models and Rule Changes will show raw ids instead of names for that side.")
 
     if args.format in ('json', 'both'):
         json_path = args.output.with_suffix('.json') if args.format == 'both' else args.output

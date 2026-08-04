@@ -4,6 +4,8 @@ Data models for DriveWorks project elements.
 
 from dataclasses import dataclass, field
 
+from .components import ComponentIndex
+
 
 @dataclass
 class Variable:
@@ -103,3 +105,11 @@ class DWProject:
     forms: dict = field(default_factory=dict)
     # GUID -> human-readable name, used to resolve Variable.category
     categories: dict = field(default_factory=dict)
+    # Everything needed for model/component diffing: named Component Sets
+    # (free, from project.xml), placed components, and driven-property
+    # rules (D1@Sketch1-style). Populated by load_project via
+    # components.build_component_index. Name resolution against a group
+    # database (CCRef/TrId -> readable name) happens separately, at the
+    # CLI/report layer, since it needs a live DB connection this loader
+    # doesn't have.
+    component_index: ComponentIndex = field(default_factory=ComponentIndex)

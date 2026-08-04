@@ -29,11 +29,13 @@ from .report import generate_html_report
 from .update_check import check_for_update, DOWNLOAD_PAGE
 
 try:
-    from .__main__ import resolve_input, cleanup_temp_dirs, resolve_output_path
+    from .__main__ import (resolve_input, cleanup_temp_dirs, resolve_output_path,
+                           resolve_db_names)
 except ImportError:
     resolve_input = None  # type: ignore
     cleanup_temp_dirs = None  # type: ignore
     resolve_output_path = None  # type: ignore
+    resolve_db_names = None  # type: ignore
 
 
 PROJX_FILETYPES = [('DriveWorks™ project', '*.driveprojx')]
@@ -178,10 +180,9 @@ class CompareApp:
         _set_window_icon(root)
         # Compact by default; the log pane is hidden (View ▸ Show Log) and the
         # window grows to fit it when shown.
-        self._geom_compact = '760x392'
-        self._geom_with_log = '760x620'
-        root.geometry(self._geom_compact)
+        root.geometry('760x392')   # _sync_window_size grows this per panel
         self.show_log = BooleanVar(value=False)
+        self.show_db = BooleanVar(value=True)
         self._busy = False
         self._build_menu()
 
@@ -194,6 +195,29 @@ class CompareApp:
         default_out = str(resolve_output_path('')) if resolve_output_path else 'dw_comparison.html'
         self.output_path = StringVar(value=default_out)
         self.open_in_browser = BooleanVar(value=True)
+
+        # Optional group-database connection for resolving model/rule names
+        # (Models and Rule Changes report sections). Old and new projects
+        # can live on different SQL servers, so each side has its own
+        # server + database. Server/database/auth-mode/username are a
+        # one-time-per-user setup, remembered in ~/.projxdiff — the
+        # password is the one exception: in-memory only, never written to
+        # disk (dbsource.py's "no stored credentials" rule).
+        saved = _load_settings()
+        self.old_db_server = StringVar(value=saved.get('old_db_server', ''))
+        self.new_db_server = StringVar(value=saved.get('new_db_server', ''))
+        self.old_db_database = StringVar(value=saved.get('old_db_database', ''))
+        self.new_db_database = StringVar(value=saved.get('new_db_database', ''))
+        # SQL Server auth is the default (the common case for a group DB);
+        # the checkbox switches to Windows integrated auth.
+        self.db_windows_auth = BooleanVar(value=saved.get('db_windows_auth', False))
+        self.db_user = StringVar(value=saved.get('db_user', ''))
+        self.db_password = StringVar()
+
+        # Last folder used per file-picker field ('old' / 'new' / 'output'),
+        # so each Browse… remembers its own location instead of sharing
+        # Tk's single global one. Session-only.
+        self._last_dirs: dict[str, str] = {}
 
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._worker: threading.Thread | None = None
@@ -216,6 +240,8 @@ class CompareApp:
         view_menu = tk.Menu(menubar, tearoff=False)
         view_menu.add_checkbutton(label='Show Log', variable=self.show_log,
                                   command=self._apply_log_visibility)
+        view_menu.add_checkbutton(label='Show Database Options', variable=self.show_db,
+                                  command=self._apply_db_visibility)
         menubar.add_cascade(label='View', menu=view_menu)
 
         tools_menu = tk.Menu(menubar, tearoff=False)
@@ -438,11 +464,11 @@ class CompareApp:
 
         label('Old project:').grid(row=0, column=0, sticky='w', **pad)
         self.old_entry.grid(row=0, column=1, sticky='ew', **pad)
-        button('Browse…', lambda: self._pick_file(self.old_path, self.old_entry)).grid(row=0, column=2, columnspan=2, sticky='ew', **pad)
+        button('Browse…', lambda: self._pick_file(self.old_path, self.old_entry, 'old')).grid(row=0, column=2, columnspan=2, sticky='ew', **pad)
 
         label('New project:').grid(row=1, column=0, sticky='w', **pad)
         self.new_entry.grid(row=1, column=1, sticky='ew', **pad)
-        button('Browse…', lambda: self._pick_file(self.new_path, self.new_entry)).grid(row=1, column=2, columnspan=2, sticky='ew', **pad)
+        button('Browse…', lambda: self._pick_file(self.new_path, self.new_entry, 'new')).grid(row=1, column=2, columnspan=2, sticky='ew', **pad)
 
         label('Output HTML:').grid(row=2, column=0, sticky='w', **pad)
         self.out_entry.grid(row=2, column=1, sticky='ew', **pad)
@@ -462,18 +488,71 @@ class CompareApp:
         )
         self.compare_btn.grid(row=3, column=2, columnspan=2, sticky='ew', **pad)
 
+        # Database Options panel — optional per-side group-DB connection for
+        # resolving model/rule names. Shown by default (View ▸ Show Database
+        # Options hides it). SQL auth fields hide when Windows auth is on.
+        self._db_row = 4
+        db_frame = tk.Frame(frm, bg='#eef1f5', highlightthickness=1,
+                            highlightbackground=_SM_DIVIDER)
+        self.db_frame = db_frame
+        db_frame.grid(row=self._db_row, column=0, columnspan=4, sticky='ew',
+                      padx=8, pady=(2, 6))
+
+        def db_label(text, **kw):
+            kw.setdefault('fg', _SM_TEXT)
+            return tk.Label(db_frame, text=text, bg='#eef1f5', anchor='w', **kw)
+
+        def db_entry(var, show=None):
+            return tk.Entry(db_frame, textvariable=var, highlightthickness=1,
+                            highlightcolor=_SM_ACCENT, relief='solid', bd=1,
+                            show=show)
+
+        db_label('DATABASE (OPTIONAL — RESOLVES MODEL/RULE NAMES)', fg=_SM_MUTED,
+                 font=('TkDefaultFont', 8, 'bold')).grid(
+            row=0, column=0, columnspan=4, sticky='w', padx=10, pady=(8, 2))
+
+        db_label('Old DB server:').grid(row=1, column=0, sticky='w', padx=10, pady=3)
+        db_entry(self.old_db_server).grid(row=1, column=1, sticky='ew', padx=(0, 10), pady=3)
+        db_label('Old DB name:').grid(row=1, column=2, sticky='w', padx=10, pady=3)
+        db_entry(self.old_db_database).grid(row=1, column=3, sticky='ew', padx=(0, 10), pady=3)
+
+        db_label('New DB server:').grid(row=2, column=0, sticky='w', padx=10, pady=3)
+        db_entry(self.new_db_server).grid(row=2, column=1, sticky='ew', padx=(0, 10), pady=3)
+        db_label('New DB name:').grid(row=2, column=2, sticky='w', padx=10, pady=3)
+        db_entry(self.new_db_database).grid(row=2, column=3, sticky='ew', padx=(0, 10), pady=3)
+
+        tk.Checkbutton(
+            db_frame, text='Use Windows Authentication (instead of SQL Server login)',
+            variable=self.db_windows_auth, bg='#eef1f5', fg=_SM_TEXT,
+            activebackground='#eef1f5', selectcolor='#ffffff', anchor='w',
+            highlightthickness=0, cursor='hand2',
+            command=self._apply_windows_auth_visibility,
+        ).grid(row=3, column=0, columnspan=4, sticky='w', padx=10, pady=(2, 0))
+
+        self.db_user_label = db_label('SQL username:')
+        self.db_user_entry = db_entry(self.db_user)
+        self.db_pass_label = db_label('SQL password:')
+        self.db_pass_entry = db_entry(self.db_password, show='*')
+        self.db_user_label.grid(row=4, column=0, sticky='w', padx=10, pady=(2, 8))
+        self.db_user_entry.grid(row=4, column=1, sticky='ew', padx=(0, 10), pady=(2, 8))
+        self.db_pass_label.grid(row=4, column=2, sticky='w', padx=10, pady=(2, 8))
+        self.db_pass_entry.grid(row=4, column=3, sticky='ew', padx=(0, 10), pady=(2, 8))
+
+        db_frame.columnconfigure(1, weight=1)
+        db_frame.columnconfigure(3, weight=1)
+
         # Status line — wraps so the full output path is always visible, and
         # carries run progress/results now that the log is hidden by default.
         self.status_label = tk.Label(frm, text='', bg=bg, anchor='w', justify='left',
                                      wraplength=660)
-        self.status_label.grid(row=4, column=0, columnspan=4, sticky='w', padx=8, pady=(2, 2))
+        self.status_label.grid(row=5, column=0, columnspan=4, sticky='w', padx=8, pady=(2, 2))
 
         # Filled by a background update check (notify-only; see _check_updates).
         self.update_label = tk.Label(frm, text='', bg=bg, fg='#3f51b5', anchor='w', cursor='hand2')
-        self.update_label.grid(row=5, column=0, columnspan=4, sticky='w', padx=8, pady=(0, 6))
+        self.update_label.grid(row=6, column=0, columnspan=4, sticky='w', padx=8, pady=(0, 6))
 
         # Log pane — hidden by default; toggled via View ▸ Show Log.
-        self._log_row = 6
+        self._log_row = 7
         self.log_label = label('Log:')
         self.log_label.grid(row=self._log_row, column=0, sticky='nw', **pad)
         self.log_box = ScrolledText(frm, height=14, wrap='word', state=DISABLED, bd=1, relief='solid')
@@ -481,11 +560,38 @@ class CompareApp:
 
         frm.columnconfigure(1, weight=1)
 
-        # Apply the initial (hidden) log state and seed the status line with the
+        # Apply the initial panel states and seed the status line with the
         # full destination; keep the status in sync when the output path changes.
+        self._apply_db_visibility()
+        self._apply_windows_auth_visibility()
         self._apply_log_visibility()
         self.output_path.trace_add('write', lambda *a: self._update_status_idle())
         self._update_status_idle()
+
+    def _sync_window_size(self) -> None:
+        """Recompute window height from which optional panels are open."""
+        height = 392
+        if self.show_db.get():
+            height += 168
+        if self.show_log.get():
+            height += 228
+        self.root.geometry(f'760x{height}')
+
+    def _apply_db_visibility(self) -> None:
+        """Show or hide the Database Options panel and resize the window."""
+        if self.show_db.get():
+            self.db_frame.grid()
+        else:
+            self.db_frame.grid_remove()
+        self._sync_window_size()
+
+    def _apply_windows_auth_visibility(self) -> None:
+        """Show the SQL username/password fields unless Windows integrated
+        auth is selected — SQL Server login is the default here."""
+        widgets = (self.db_user_label, self.db_user_entry,
+                   self.db_pass_label, self.db_pass_entry)
+        for w in widgets:
+            w.grid_remove() if self.db_windows_auth.get() else w.grid()
 
     def _apply_log_visibility(self) -> None:
         """Show or hide the log pane (View ▸ Show Log) and resize the window."""
@@ -493,12 +599,11 @@ class CompareApp:
             self.log_label.grid()
             self.log_box.grid()
             self._frm.rowconfigure(self._log_row, weight=1)
-            self.root.geometry(self._geom_with_log)
         else:
             self.log_label.grid_remove()
             self.log_box.grid_remove()
             self._frm.rowconfigure(self._log_row, weight=0)
-            self.root.geometry(self._geom_compact)
+        self._sync_window_size()
 
     def _set_status(self, text: str, color: str = '#444') -> None:
         self.status_label.configure(text=text, fg=color)
@@ -512,13 +617,19 @@ class CompareApp:
         full = str(resolve_output_path(raw)) if resolve_output_path else (raw or 'dw_comparison.html')
         self._set_status('Report will be saved to:  ' + full, '#444')
 
-    def _pick_file(self, target: StringVar, entry_widget=None) -> None:
+    def _pick_file(self, target: StringVar, entry_widget=None, key: str = '') -> None:
         path = filedialog.askopenfilename(
             title='Select project file',
             filetypes=PROJX_FILETYPES,
+            initialdir=self._last_dirs.get(key, ''),
         )
         if path:
-            target.set(path)
+            # normpath shows the native backslash form on Windows — Tk's
+            # picker returns forward slashes (it's Tcl underneath).
+            norm = os.path.normpath(path)
+            target.set(norm)
+            if key:
+                self._last_dirs[key] = os.path.dirname(norm)
             if entry_widget is not None:
                 entry_widget.xview_moveto(1.0)  # show the filename end, not the start
 
@@ -529,11 +640,14 @@ class CompareApp:
         path = filedialog.asksaveasfilename(
             title='Save report as',
             defaultextension='.html',
-            initialdir=str(current.parent) if current.is_absolute() else '',
+            initialdir=self._last_dirs.get('output')
+                       or (str(current.parent) if current.is_absolute() else ''),
             initialfile=current.name,
         )
         if path:
-            self.output_path.set(path)
+            norm = os.path.normpath(path)
+            self.output_path.set(norm)
+            self._last_dirs['output'] = os.path.dirname(norm)
             self.out_entry.xview_moveto(1.0)
 
     def _log(self, msg: str) -> None:
@@ -576,6 +690,25 @@ class CompareApp:
         output = resolve_output_path(out_raw) if resolve_output_path else Path(out_raw or 'dw_comparison.html')
         open_browser = self.open_in_browser.get()
 
+        # Snapshot DB fields on the UI thread (Tk vars aren't thread-safe)
+        # and remember the one-time setup — never the password.
+        db = {
+            'old_server': self.old_db_server.get().strip(),
+            'old_database': self.old_db_database.get().strip(),
+            'new_server': self.new_db_server.get().strip(),
+            'new_database': self.new_db_database.get().strip(),
+            'windows_auth': self.db_windows_auth.get(),
+            'user': self.db_user.get().strip(),
+            'password': self.db_password.get(),
+        }
+        for key, value in (('old_db_server', db['old_server']),
+                           ('new_db_server', db['new_server']),
+                           ('old_db_database', db['old_database']),
+                           ('new_db_database', db['new_database']),
+                           ('db_windows_auth', db['windows_auth']),
+                           ('db_user', db['user'])):
+            _save_setting(key, value)
+
         # Clear log, disable button, show progress in the status line.
         self.log_box.configure(state=NORMAL)
         self.log_box.delete('1.0', END)
@@ -586,17 +719,19 @@ class CompareApp:
 
         self._worker = threading.Thread(
             target=self._run_compare,
-            args=(old, new, output, open_browser),
+            args=(old, new, output, open_browser, db),
             daemon=True,
         )
         self._worker.start()
 
-    def _run_compare(self, old: Path, new: Path, output: Path, open_browser: bool) -> None:
+    def _run_compare(self, old: Path, new: Path, output: Path, open_browser: bool,
+                     db: dict = None) -> None:
         writer = _QueueWriter(self._log_queue)
         prev_stdout = sys.stdout
         sys.stdout = writer
         saved = None
         error = None
+        db_warnings: list = []
         try:
             old_name = old.stem if old.suffix.lower() == '.driveprojx' else old.name
             new_name = new.stem if new.suffix.lower() == '.driveprojx' else new.name
@@ -615,8 +750,27 @@ class CompareApp:
             print(f'Loading new project: {new_name}')
             new_proj = load_project(new_folder)
 
+            old_resolved = new_resolved = None
+            old_props = new_props = old_types = new_types = None
+            if resolve_db_names and db:
+                sql_auth = not db['windows_auth']
+                for side, proj in (('old', old_proj), ('new', new_proj)):
+                    resolved, props, types, err = resolve_db_names(
+                        side, db[f'{side}_server'], db[f'{side}_database'],
+                        proj.component_index, user=db['user'],
+                        password=db['password'], sql_auth=sql_auth)
+                    if err:
+                        db_warnings.append(f'{side.title()} database: {err}')
+                    if side == 'old':
+                        old_resolved, old_props, old_types = resolved, props, types
+                    else:
+                        new_resolved, new_props, new_types = resolved, props, types
+
             print('Generating comparison report...')
-            html = generate_html_report(old_proj, new_proj, old_name, new_name)
+            html = generate_html_report(old_proj, new_proj, old_name, new_name,
+                                        old_resolved, new_resolved,
+                                        old_props, new_props,
+                                        old_types, new_types)
 
             output.write_text(html, encoding='utf-8')
             saved = str(output.resolve())
@@ -634,10 +788,13 @@ class CompareApp:
             sys.stdout = prev_stdout
             if cleanup_temp_dirs:
                 cleanup_temp_dirs()  # remove .driveprojx extractions from this run
-            self.root.after(0, lambda: self._on_done(saved=saved, error=error))
+            self.root.after(0, lambda: self._on_done(saved=saved, error=error,
+                                                     db_warnings=db_warnings))
 
-    def _on_done(self, saved: str | None = None, error: str | None = None) -> None:
+    def _on_done(self, saved: str | None = None, error: str | None = None,
+                 db_warnings: list = None) -> None:
         self._busy = False
+        db_warnings = db_warnings or []
         self.compare_btn.configure(state=NORMAL, text='Compare')
         if error:
             # The traceback is in the (possibly hidden) log; make sure the user
@@ -649,7 +806,15 @@ class CompareApp:
             )
         elif saved:
             note = ' — opened in browser' if self.open_in_browser.get() else ''
-            self._set_status('✅ Report saved to:  ' + saved + note, '#1b7a3d')
+            msg = '✅ Report saved to:  ' + saved + note
+            if db_warnings:
+                # A DB failure doesn't stop the report, so say it right here
+                # in amber — not only in the hidden log.
+                msg += '\n⚠ ' + '  ·  '.join(db_warnings) + \
+                       '\n   Models and Rule Changes show raw ids for that side.'
+                self._set_status(msg, '#b8860b')
+            else:
+                self._set_status(msg, '#1b7a3d')
         else:
             self._update_status_idle()
 

@@ -52,6 +52,17 @@ def inline_diff(old: str, new: str) -> str:
     return ''.join(result)
 
 
+def _filename(path: str) -> str:
+    """Just the file name — the segment after the last path separator —
+    since that's what's actually useful to scan in a rule diff; the full
+    path is kept as a hover tooltip in case the folder ever matters for
+    telling two same-named parts apart. Handles both backslash (the DB
+    stores Windows/UNC paths) and forward slash."""
+    if not path:
+        return path
+    return re.split(r'[\\/]', path)[-1]
+
+
 def compare_dicts(old: dict, new: dict) -> tuple[set, set, set]:
     """Compare two dicts, return (added, removed, common) keys"""
     old_keys = set(old.keys())
@@ -316,6 +327,243 @@ def compare_component_tasks(old: dict, new: dict) -> tuple[str, dict]:
     html = ('<table class="grouped"><thead><tr><th>Task</th><th>Type</th><th>Rule</th>'
             '<th>Status</th><th>Formula</th></tr></thead>'
             f'<tbody>{body}</tbody></table>')
+    return html, stats
+
+
+def compare_component_sets(old: dict, new: dict) -> tuple[str, dict]:
+    """Compare Component Sets — named top-level model factories from
+    project.xml (e.g. 'R1-Aluminum', 'CRITICAL ENVIRONMENT'). Names and
+    generation rules are free: no database lookup needed. A set counts as
+    modified if its generation rule or type (PartFactory/AssemblyFactory)
+    changed."""
+    added, removed, common = compare_dicts(old, new)
+    stats = {'added': len(added), 'removed': len(removed), 'modified': 0, 'unchanged': 0}
+    rows = []
+
+    for name in sorted(added):
+        s = new[name]
+        rows.append(f'<tr class="added"><td>{escape(name)}</td><td>{escape(s.set_type)}</td>'
+                    f'<td><span class="badge badge-added">Added</span></td>'
+                    f'<td class="formula">{escape(s.rule)}</td></tr>')
+
+    for name in sorted(removed):
+        s = old[name]
+        rows.append(f'<tr class="removed"><td>{escape(name)}</td><td>{escape(s.set_type)}</td>'
+                    f'<td><span class="badge badge-removed">Removed</span></td>'
+                    f'<td class="formula">{escape(s.rule)}</td></tr>')
+
+    for name in sorted(common):
+        o, n = old[name], new[name]
+        type_cell = escape(n.set_type) if o.set_type == n.set_type else inline_diff(o.set_type, n.set_type)
+        if o.rule != n.rule or o.set_type != n.set_type:
+            stats['modified'] += 1
+            rule_cell = inline_diff(o.rule, n.rule) if o.rule != n.rule else escape(n.rule)
+            rows.append(f'<tr class="modified"><td>{escape(name)}</td><td>{type_cell}</td>'
+                        f'<td><span class="badge badge-modified">Modified</span></td>'
+                        f'<td class="formula">{rule_cell}</td></tr>')
+        else:
+            stats['unchanged'] += 1
+            rows.append(f'<tr class="unchanged"><td>{escape(name)}</td><td>{escape(n.set_type)}</td>'
+                        f'<td>·</td><td class="formula">{escape(n.rule)}</td></tr>')
+
+    html = f'''<table>
+        <thead><tr><th>Component Set</th><th>Type</th><th>Status</th><th>Generation Rule</th></tr></thead>
+        <tbody>{"".join(rows) if rows else '<tr><td colspan="4" class="empty">No component sets found</td></tr>'}</tbody>
+    </table>'''
+
+    return html, stats
+
+
+def compare_models(old_resolved: dict, new_resolved: dict) -> tuple[str, dict]:
+    """Diff two sides' resolved CCRef/TrId -> name maps by FILE NAME, not the
+    full path and not the raw id. Different DriveWorks group databases can
+    assign a different id to what a person would call the same file, so id
+    equality isn't a safe way to tell "unchanged" from "id just churned"
+    apart — and the folder a file lives in isn't part of its identity either
+    (the same model moved to a different folder shouldn't read as removed +
+    added). File name is the portable one; full path is kept as a hover
+    tooltip in case the folder ever matters for telling two same-named parts
+    apart. old_resolved/new_resolved come from components.resolve_names()
+    and are empty when no database was supplied, in which case this section
+    has nothing to compare."""
+    stats = {'added': 0, 'removed': 0, 'modified': 0, 'unchanged': 0}
+    if not old_resolved and not new_resolved:
+        return ('<p class="empty">No database connection supplied — model names were not resolved. '
+                'Raw component/model ids still appear under Component Tasks.</p>', stats)
+
+    # Map filename -> one example full path (for the hover tooltip); when
+    # multiple captured files share a name, the last one wins, which is fine
+    # since it's just a tooltip, not part of the comparison itself.
+    old_by_name = {_filename(v): v for v in old_resolved.values() if v}
+    new_by_name = {_filename(v): v for v in new_resolved.values() if v}
+    old_names = set(old_by_name)
+    new_names = set(new_by_name)
+    added = sorted(new_names - old_names)
+    removed = sorted(old_names - new_names)
+    stats['added'] = len(added)
+    stats['removed'] = len(removed)
+    stats['unchanged'] = len(old_names & new_names)
+
+    rows = []
+    for n in added:
+        title_attr = f' title="{escape(new_by_name[n], quote=True)}"'
+        rows.append(f'<tr class="added"><td><span class="badge badge-added">Added</span></td>'
+                    f'<td{title_attr}>{escape(n)}</td></tr>')
+    for n in removed:
+        title_attr = f' title="{escape(old_by_name[n], quote=True)}"'
+        rows.append(f'<tr class="removed"><td><span class="badge badge-removed">Removed</span></td>'
+                    f'<td{title_attr}>{escape(n)}</td></tr>')
+
+    body = "".join(rows) if rows else '<tr><td colspan="2" class="empty">No models added or removed</td></tr>'
+    html = (f'<table><thead><tr><th>Status</th><th>Model</th></tr></thead><tbody>{body}</tbody></table>'
+            f'<p class="attr-note">{stats["unchanged"]} model(s) unchanged — matched by file name, '
+            f'not folder location or database id, since the same real file can live in a different '
+            f'folder or carry a different id in each database.</p>')
+    return html, stats
+
+
+def compare_property_rules(old_idx, new_idx, old_resolved: dict = None, new_resolved: dict = None,
+                            old_prop_resolved: dict = None, new_prop_resolved: dict = None,
+                            old_prop_types: dict = None, new_prop_types: dict = None) -> tuple[str, dict]:
+    """Diff every driven property (D1@Sketch1-style) between the two
+    projects' components.ComponentIndex objects. Matched by rule_id, which
+    is confirmed unique per placement — even when the same file is placed
+    in the tree multiple times, each placement's rules have their own
+    rule_id, so this never silently merges two placements together. Each
+    row is labeled with a breadcrumb (tree position, built from the model
+    names already resolved) so repeated placements of the same file are
+    told apart. old/new_resolved name the models in the breadcrumb;
+    old/new_prop_resolved (from decoding CapturedComponents.Data) turn
+    cp_ref/ce_ref into a D1@Sketch1-style property name — both fall back to
+    raw GUIDs when no database was supplied. old/new_prop_types (from the
+    SAME Data blobs' T attribute) are the authoritative Type-column source
+    — see rule_type_for and components.TYPE_GUID_KIND. Rows where neither
+    side has a formula (an unbound placeholder) are skipped; those aren't
+    real rules.
+    """
+    old_resolved = old_resolved or {}
+    new_resolved = new_resolved or {}
+    old_prop_resolved = old_prop_resolved or {}
+    new_prop_resolved = new_prop_resolved or {}
+    old_prop_types = old_prop_types or {}
+    new_prop_types = new_prop_types or {}
+
+    from . import components as C
+
+    old_by_rid = {C._norm(p.rule_id): p for p in old_idx.property_rules if p.rule_id}
+    new_by_rid = {C._norm(p.rule_id): p for p in new_idx.property_rules if p.rule_id}
+
+    added_rids = set(new_by_rid) - set(old_by_rid)
+    removed_rids = set(old_by_rid) - set(new_by_rid)
+    shared_rids = set(old_by_rid) & set(new_by_rid)
+    modified_rids = {rid for rid in shared_rids if old_by_rid[rid].formula != new_by_rid[rid].formula}
+
+    total_compared = len(shared_rids) + len(added_rids) + len(removed_rids)
+    stats = {'added': 0, 'removed': 0, 'modified': 0,
+             'unchanged': total_compared - len(modified_rids)}
+
+    def crumb(pr, idx, resolved):
+        """(short, full) breadcrumb pair. short shortens each ancestor to
+        just its file name (e.g. 'PLENUM.SLDASM' not the full T:\\... path)
+        since that's what's actually useful to scan in a rule diff; full is
+        kept for a hover tooltip in case the folder ever matters."""
+        full = idx.breadcrumb(pr.owner_path, resolved)
+        if not full:
+            return "(unresolved placement)", ""
+        short = " > ".join(_filename(p) for p in full.split(" > "))
+        return short, full
+
+    def rule_type_for(pr, resolved_props, resolved_types):
+        """Type-column label for a "dimension" or "instance" kind rule (the
+        two PP-based kinds — see PropertyRule.kind).
+
+        AUTHORITATIVE PATH: CapturedComponents.Data's own T attribute on
+        the cp_ref's <ccomp:P> element is a stable, per-category
+        type-classification GUID DriveWorks itself writes — see
+        components.TYPE_GUID_KIND. Confirmed directly against a real
+        decoded Data blob: Dimension/Feature/Instance each have their own
+        constant T value, and critically, a resolved cp_ref name does NOT
+        imply Dimension — the confirmed "Instance" example (an
+        instance-naming property, cp_ref resolving to e.g. "MyPart-1") has
+        a real name AND its own distinct T-guid, disproving that shortcut.
+        This is checked first and is authoritative whenever available.
+
+        FALLBACK (no database, or an unrecognized T-guid — e.g. an older
+        DriveWorks schema): the structural ce_ref split from parsing (kind
+        == "instance" vs "dimension") plus whether names resolve. This is
+        a best-effort guess, not authoritative — kept only so the column
+        still shows something plausible rather than nothing when the real
+        signal isn't available.
+        """
+        type_guid = resolved_types.get(C._norm(pr.cp_ref))
+        authoritative_kind = C.TYPE_GUID_KIND.get(type_guid)
+        if authoritative_kind:
+            return C.KIND_LABELS[authoritative_kind]
+
+        # --- fallback: no authoritative type-guid available ---
+        if pr.kind not in ("dimension", "instance"):
+            # file_name/relative_path/tag/loop_control have no cp_ref/ce_ref
+            # at all (see PropertyRule.kind) - nothing to resolve, their
+            # kind IS the answer, and it's structural (not a guess).
+            return C.KIND_LABELS.get(pr.kind, pr.kind)
+        cp_name = resolved_props.get(C._norm(pr.cp_ref))
+        if pr.kind == "instance":
+            return C.KIND_LABELS["dimension"] if cp_name else C.KIND_LABELS["instance"]
+        # pr.kind == "dimension" from here on: ce_ref is a real entity GUID.
+        if cp_name:
+            return C.KIND_LABELS["dimension"]
+        ce = C._norm(pr.ce_ref)
+        ce_name = resolved_props.get(ce) if ce else None
+        if ce_name:
+            return C.KIND_LABELS["feature"]
+        return C.KIND_LABELS["dimension"]
+
+    def prop_label_for(pr, resolved_props):
+        """Property-column text. Dimension/instance rules show the actual
+        resolved D1@Sketch1-style name; the four component-level rules
+        (file_name/relative_path/tag/loop_control) have no per-entity name
+        to show — that classification lives in the Type column instead, so
+        showing it again here would just duplicate the Type cell."""
+        if pr.kind in ("dimension", "instance"):
+            return C.property_label(pr, resolved_props)
+        return "—"
+
+    rows = []
+    for rid in sorted(added_rids):
+        pr = new_by_rid[rid]
+        if pr.formula:
+            stats['added'] += 1
+            rows.append(('added', crumb(pr, new_idx, new_resolved), rule_type_for(pr, new_prop_resolved, new_prop_types),
+                        prop_label_for(pr, new_prop_resolved), '', pr.formula))
+    for rid in sorted(removed_rids):
+        pr = old_by_rid[rid]
+        if pr.formula:
+            stats['removed'] += 1
+            rows.append(('removed', crumb(pr, old_idx, old_resolved), rule_type_for(pr, old_prop_resolved, old_prop_types),
+                        prop_label_for(pr, old_prop_resolved), pr.formula, ''))
+    for rid in sorted(modified_rids):
+        op, npr = old_by_rid[rid], new_by_rid[rid]
+        stats['modified'] += 1
+        rows.append(('modified', crumb(npr, new_idx, new_resolved), rule_type_for(npr, new_prop_resolved, new_prop_types),
+                    prop_label_for(npr, new_prop_resolved), op.formula, npr.formula))
+
+    if not rows:
+        html = f'<p class="empty">No rule content changes found ({total_compared} driven properties compared).</p>'
+        return html, stats
+
+    body_rows = []
+    for status, (crumb_short, crumb_full), rule_type, prop_label, of, nf in rows:
+        badge = f'<span class="badge badge-{status}">{status.title()}</span>'
+        old_cell = escape(of) if of else '<span class="attr-note">(blank)</span>'
+        new_cell = inline_diff(of, nf) if (of and nf) else (escape(nf) if nf else '<span class="attr-note">(blank)</span>')
+        title_attr = f' title="{escape(crumb_full, quote=True)}"' if crumb_full else ''
+        body_rows.append(f'<tr class="{status}"><td{title_attr}>{escape(crumb_short)}</td><td>{escape(rule_type)}</td>'
+                         f'<td>{escape(prop_label)}</td><td>{badge}</td>'
+                         f'<td class="formula">{old_cell}</td><td class="formula">{new_cell}</td></tr>')
+
+    html = ('<table class="rule-changes"><thead><tr><th>Placement</th><th>Type</th><th>Property</th>'
+            '<th>Status</th><th>Old formula</th><th>New formula</th></tr></thead>'
+            f'<tbody>{"".join(body_rows)}</tbody></table>')
     return html, stats
 
 
