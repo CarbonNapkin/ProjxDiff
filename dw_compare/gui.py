@@ -154,43 +154,80 @@ class CompareApp:
 
         self.root.config(menu=menubar)
 
-    def _show_help(self) -> None:
-        """Concise in-app usage help, so the menu offers real guidance rather
-        than just opening a code repository in the browser."""
+    def _dialog(self, title: str, subtitle: str) -> tuple:
+        """Toplevel styled like the rest of the app — dark header bar, light
+        body card. Returns (window, body_frame); the caller packs content
+        into the body and finishes with _finish_dialog."""
         top = tk.Toplevel(self.root)
-        top.title('How to Use')
+        top.title(title)
         top.resizable(False, False)
-        bg = '#f4f4f4'
-        top.configure(bg=bg)
+        top.configure(bg=_SM_BG)
+        header = tk.Frame(top, bg=_SM_HEADER_BG)
+        header.pack(fill='x')
+        tk.Label(header, text=title, bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
+                 font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=18, pady=(12, 0))
+        tk.Label(header, text=subtitle, bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
+                 font=('TkDefaultFont', 9)).pack(anchor='w', padx=18, pady=(1, 12))
+        body = tk.Frame(top, bg=_SM_CARD, highlightbackground=_SM_DIVIDER,
+                        highlightthickness=1, padx=18, pady=14)
+        body.pack(fill='both', expand=True, padx=14, pady=(12, 0))
+        return top, body
 
-        steps = (
-            "Compare two DriveWorks™ projects into one shareable HTML report.\n\n"
-            "1.  Old project — click Browse… and pick the baseline .driveprojx.\n"
-            "2.  New project — click Browse… and pick the version to compare.\n"
-            "3.  Output — defaults to your Downloads folder; change it with\n"
-            "      Save as… if you like.\n"
-            "4.  Click Compare. The report opens in your browser when it finishes.\n\n"
-            "The report groups every change (added / removed / modified) by\n"
-            "section — variables, tables, component tasks, documents, macros,\n"
-            "navigation, and form rules — with search and status filters on top.\n\n"
-            "Everything runs locally; your project files never leave your computer."
-        )
-        tk.Label(top, text='How to Use Projx Diff', bg=bg,
-                 font=('TkDefaultFont', 14, 'bold')).pack(padx=16, pady=(14, 6), anchor='w')
-        tk.Label(top, text=steps, bg=bg, justify='left', anchor='w').pack(padx=16, pady=(0, 8), anchor='w')
-
-        link = tk.Label(top, text='More at ' + __url__, bg=bg, fg='#3f51b5', cursor='hand2')
-        link.pack(padx=16, pady=(0, 4), anchor='w')
-        link.bind('<Button-1>', lambda _e: webbrowser.open(__url__))
-
-        tk.Button(top, text='Close', command=top.destroy).pack(pady=(8, 12))
-
+    def _finish_dialog(self, top) -> None:
+        """Accent Close button, centered placement, modal grab."""
+        bar = tk.Frame(top, bg=_SM_BG)
+        bar.pack(fill='x', pady=(8, 12))
+        tk.Button(bar, text='Close', command=top.destroy, bg=_SM_ACCENT, fg='#ffffff',
+                  activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
+                  relief='flat', padx=18, pady=4, cursor='hand2',
+                  font=('TkDefaultFont', 10, 'bold')).pack(side='right', padx=14)
         top.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - top.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - top.winfo_height()) // 3
         top.geometry(f'+{max(0, x)}+{max(0, y)}')
         top.transient(self.root)
         top.grab_set()
+
+    def _show_help(self) -> None:
+        """Concise in-app usage help covering both halves of the app: the
+        one-off comparison and the nightly sync / dashboard pipeline."""
+        top, body = self._dialog('How to Use', 'Two tools in one window')
+
+        def heading(text, first=False):
+            tk.Label(body, text=text, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
+                     font=('TkDefaultFont', 11, 'bold')).pack(
+                fill='x', pady=((0 if first else 10), 2))
+
+        def para(text):
+            tk.Label(body, text=text, bg=_SM_CARD, fg=_SM_TEXT, justify='left',
+                     anchor='w', wraplength=520).pack(fill='x')
+
+        heading('Compare two projects', first=True)
+        para('1.  Pick the baseline and the newer .driveprojx with Browse…\n'
+             '2.  Choose where the HTML report lands (defaults to Downloads).\n'
+             '3.  Click Compare — the report opens in your browser.\n'
+             'The report groups every added / removed / modified element by '
+             'section — variables, tables, tasks, documents, macros, navigation, '
+             'and form rules — with search and status filters on top.')
+
+        heading('Track your library nightly')
+        para('Tools ▸ Manage Nightly Sync sets up automatic tracking: each '
+             'environment group (production, staging, …) is archived into '
+             'version control every night, changes are measured per project and '
+             'per user, and a work dashboard is generated. New projects and '
+             'unfamiliar DriveWorks user names show up there for one-click '
+             'triage. Command-line equivalents: --sync, --census, --dashboard.')
+
+        heading('Private by design')
+        para('Everything runs locally; your project files never leave your '
+             'machines.')
+
+        link = tk.Label(body, text='More at ' + __url__, bg=_SM_CARD, fg=_SM_ACCENT,
+                        cursor='hand2', anchor='w')
+        link.pack(fill='x', pady=(10, 0))
+        link.bind('<Button-1>', lambda _e: webbrowser.open(__url__))
+
+        self._finish_dialog(top)
 
     def _manage_sync(self) -> None:
         """Tools > Manage Nightly Sync: triage the census — decide pending
@@ -216,38 +253,23 @@ class CompareApp:
         _SyncManager(self.root, cfg, cpath, census)
 
     def _show_about(self) -> None:
-        """Custom About window. messagebox.showinfo works but a Toplevel
-        gives us a clickable repo link and slightly nicer typography."""
-        top = tk.Toplevel(self.root)
-        top.title('About')
-        top.resizable(False, False)
-        bg = '#f4f4f4'
-        top.configure(bg=bg)
+        """About window in the app's shared dialog style."""
+        top, body = self._dialog('About Projx Diff', f'Version {__version__}')
 
-        pad = {'padx': 16, 'pady': 4}
-        tk.Label(top, text='Projx Diff', bg=bg,
-                 font=('TkDefaultFont', 14, 'bold')).pack(**pad, anchor='w')
-        tk.Label(top, text=f'Version {__version__}', bg=bg).pack(padx=16, pady=(0, 8), anchor='w')
-        tk.Label(top, text=f'© {__author__}', bg=bg).pack(padx=16, anchor='w')
-        tk.Label(top, text=f'Licensed under {__license__}', bg=bg, fg='#555').pack(padx=16, anchor='w')
-        tk.Label(top, text='An independent tool. Not affiliated with, endorsed by, or\n'
-                          'tested by DriveWorks™ Ltd. DriveWorks™ is a trademark of\n'
-                          'DriveWorks Ltd.',
-                 bg=bg, fg='#777', justify='left').pack(padx=16, pady=(8, 0), anchor='w')
+        tk.Label(body, text=f'© {__author__}  ·  {__license__} license',
+                 bg=_SM_CARD, fg=_SM_TEXT, anchor='w').pack(fill='x')
+        tk.Label(body, text='An independent tool. Not affiliated with, endorsed '
+                            'by, or tested by DriveWorks™ Ltd. DriveWorks™ is a '
+                            'trademark of DriveWorks Ltd.',
+                 bg=_SM_CARD, fg=_SM_MUTED, justify='left', anchor='w',
+                 wraplength=440).pack(fill='x', pady=(8, 0))
 
-        link = tk.Label(top, text=__url__, bg=bg, fg='#3f51b5', cursor='hand2')
-        link.pack(padx=16, pady=(8, 4), anchor='w')
+        link = tk.Label(body, text=__url__, bg=_SM_CARD, fg=_SM_ACCENT,
+                        cursor='hand2', anchor='w')
+        link.pack(fill='x', pady=(10, 0))
         link.bind('<Button-1>', lambda _e: webbrowser.open(__url__))
 
-        tk.Button(top, text='Close', command=top.destroy).pack(pady=(8, 12))
-
-        # Center the dialog over the main window.
-        top.update_idletasks()
-        x = self.root.winfo_rootx() + (self.root.winfo_width() - top.winfo_width()) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - top.winfo_height()) // 3
-        top.geometry(f'+{max(0, x)}+{max(0, y)}')
-        top.transient(self.root)
-        top.grab_set()
+        self._finish_dialog(top)
 
     def _build_ui(self) -> None:
         # Plain tk widgets (not ttk) because ttk + Tk 8.5 on modern macOS often

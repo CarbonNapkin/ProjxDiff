@@ -81,6 +81,69 @@ DEFAULTS = {
 }
 
 
+def slug_source_name(name: str) -> str:
+    """Turn a human group name into a valid source name: whitespace becomes
+    hyphens, anything outside the safe charset is dropped."""
+    slug = re.sub(r'\s+', '-', name.strip())
+    slug = re.sub(r'[^A-Za-z0-9_-]', '', slug)
+    if not slug:
+        raise SystemExit(f'group name {name!r} has no usable characters '
+                         '(letters, digits, underscore, hyphen)')
+    return slug
+
+
+def init_site(root: Path) -> Path:
+    """Create the standard site layout under `root` and write a starter site
+    config at <root>/config.json — no environment groups yet; those come from
+    add_source (CLI: --census ... --add-source, GUI: Manage Nightly Sync).
+    Refuses to overwrite an existing config."""
+    root = Path(root)
+    config_path = root / 'config.json'
+    if config_path.exists():
+        raise SystemExit(f'config already exists: {config_path}')
+    root.mkdir(parents=True, exist_ok=True)
+    cfg = {
+        'sources': {},
+        'data_dir': (root / 'data').as_posix(),
+        'derive_author_from_file': True,
+    }
+    config_path.write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
+    return config_path
+
+
+def add_source(config_path: Path, name: str, source_dir) -> str:
+    """Append an environment group to a site config. The human name is
+    slugged; the group's archive repo is auto-placed at
+    <config dir>/repos/<slug> so callers never handle that concept. The
+    write is atomic and re-validated through load_config. Returns the slug."""
+    config_path = Path(config_path)
+    try:
+        raw = json.loads(config_path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        raise SystemExit(f'config not found: {config_path}\n'
+                         'Create one first with: python -m dw_compare '
+                         f'--init-config {config_path.parent}')
+    if 'sources' not in raw:
+        raise SystemExit('this is a legacy single-source config; environment '
+                         'groups can only be added to a site config '
+                         '(see config.example.site.json)')
+    slug = slug_source_name(name)
+    if slug in raw['sources']:
+        raise SystemExit(f'group "{slug}" already exists in {config_path}')
+    source_dir = Path(source_dir)
+    if not source_dir.is_dir():
+        raise SystemExit(f'source folder does not exist: {source_dir}')
+    raw['sources'][slug] = {
+        'source_dir': source_dir.as_posix(),
+        'archive_repo': (config_path.parent / 'repos' / slug).as_posix(),
+    }
+    tmp = config_path.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(raw, indent=2) + '\n', encoding='utf-8')
+    tmp.replace(config_path)
+    load_config(config_path)  # raises SystemExit if the result is invalid
+    return slug
+
+
 def load_config(path: Path) -> dict:
     """Load and validate a sync config. Two shapes are accepted:
 
@@ -96,7 +159,13 @@ def load_config(path: Path) -> dict:
     name '' so census keys, report paths, and metrics rows stay exactly as
     they were before site configs existed."""
     cfg = dict(DEFAULTS)
-    cfg.update(json.loads(path.read_text(encoding='utf-8')))
+    try:
+        cfg.update(json.loads(path.read_text(encoding='utf-8')))
+    except FileNotFoundError:
+        raise SystemExit(
+            f'config not found: {path}\n'
+            'Create one with: python -m dw_compare --init-config <folder>\n'
+            '(or in the app: Tools > Manage Nightly Sync)')
 
     if cfg['sources']:
         if not cfg.get('data_dir'):

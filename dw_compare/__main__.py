@@ -191,6 +191,12 @@ Examples:
                        help='(with --census) set a project disposition to ignore')
     parser.add_argument('--no-scan', action='store_true',
                        help='(with --census) apply edits only; skip the share scan')
+    parser.add_argument('--init-config', type=Path, metavar='FOLDER',
+                       help='Create a starter site config at FOLDER/config.json '
+                            '(archives, metrics, and dashboard live under FOLDER)')
+    parser.add_argument('--add-source', action='append', default=[], metavar='NAME=FOLDER',
+                       help='(with --census) add an environment group to the config, '
+                            'then scan it')
     parser.add_argument('-V', '--version', action='version',
                        version=f'Projx Diff {__version__}')
 
@@ -201,6 +207,16 @@ Examples:
         gui_main()
         return
 
+    if args.init_config:
+        from .sync import init_site
+        cfg_path = init_site(args.init_config)
+        print(f'Created {cfg_path}')
+        print('Next, add an environment group and scan it:')
+        print(f'  python -m dw_compare --census "{cfg_path}" '
+              '--add-source "prod=C:/Path/To/Projects"')
+        print('(or in the app: Tools > Manage Nightly Sync)')
+        return
+
     if args.sync:
         from .sync import main as sync_main
         sys.exit(sync_main([str(args.sync)] + (['--dry-run'] if args.dry_run else [])))
@@ -208,6 +224,8 @@ Examples:
     if args.census:
         from .census import main as census_main
         argv = [str(args.census)]
+        for s in args.add_source:
+            argv += ['--add-source', s]
         for m in args.map:
             argv += ['--map', m]
         for t in args.track:

@@ -4,6 +4,26 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Clickable-setup engine layer**: `--init-config FOLDER` creates a starter
+  site config (config, archives, metrics, and dashboard all live under one
+  folder), and `--census <config> --add-source "Name=FOLDER"` adds an
+  environment group — human names are slugged to safe form, the group's
+  archive repo is auto-placed, and the same command scans the new group so
+  its projects and user names are immediately listed for triage. A missing
+  config now produces a clear pointer to `--init-config` instead of a
+  traceback. These back the upcoming "Add environment group" GUI flow
+  (spec in docs/specs/).
+
+### Changed
+
+- **Help and About dialogs restyled** to the app's shared look (dark header,
+  card body), and the Help content now covers the nightly sync, census
+  triage, and dashboard — not just the compare flow.
+
 ## [1.3.0] - 2026-08-04
 
 ### Added

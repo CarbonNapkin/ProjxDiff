@@ -265,6 +265,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description='Scan projects/users into the sync census and manage dispositions')
     parser.add_argument('config', type=Path, help='Path to the nightly sync config JSON')
+    parser.add_argument('--add-source', action='append', default=[], metavar='NAME=FOLDER',
+                        help='Add an environment group to a site config, then scan it: '
+                             '--add-source "prod=C:/DriveWorksFiles"')
     parser.add_argument('--map', action='append', default=[], metavar='RAW=IDENTITY',
                         help='Map a display name: --map "Zach=Zach Miller <z@x.com>"')
     parser.add_argument('--track', action='append', default=[], metavar='PROJECT',
@@ -274,6 +277,17 @@ def main(argv=None) -> int:
     parser.add_argument('--no-scan', action='store_true',
                         help='Apply edits only; skip the share scan')
     args = parser.parse_args(argv)
+
+    # Groups are added before the config loads so the same invocation's scan
+    # covers them — add + scan + triage listing in one command.
+    if args.add_source:
+        from .sync import add_source
+        for spec in args.add_source:
+            name, _, folder = spec.partition('=')
+            if not name.strip() or not folder.strip():
+                raise SystemExit(f'--add-source expects NAME=FOLDER, got: {spec!r}')
+            slug = add_source(args.config, name.strip(), folder.strip())
+            print(f'added group: {slug} -> {folder.strip()}')
 
     cfg = load_config(args.config)
     cpath = census_path(cfg)

@@ -435,7 +435,11 @@ def main(argv=None) -> int:
                         help='Output HTML path (default: <data_dir>/dashboard.html)')
     args = parser.parse_args(argv)
 
-    cfg = json.loads(args.config.read_text(encoding='utf-8'))
+    try:
+        cfg = json.loads(args.config.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        raise SystemExit(f'config not found: {args.config}\n'
+                         'Create one with: python -m dw_compare --init-config <folder>')
     data_dir = Path(cfg['data_dir'])
     cpath = Path(cfg['census_path']) if cfg.get('census_path') else data_dir / 'census.json'
     sources = list(cfg['sources']) if cfg.get('sources') else None
