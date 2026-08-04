@@ -66,6 +66,15 @@ def test_close_is_safe_when_never_connected():
     DwDatabase(label="t", server="x", database="y").close()
 
 
+def test_negative_cached_misses_stay_absent_on_cached_path():
+    # REGRESSION (found by the live SQL matrix on 2017/2019/2022 alike): once
+    # every wanted id is cached, the early-exit path leaked negative-cached
+    # misses as {id: None} instead of omitting them.
+    db = DwDatabase(label="t", server="x", database="y")
+    db._cache[("dbo", "T", "id", "name")] = {"known": "Name", "ghost": None}
+    assert db.lookup("T", "id", "name", ["known", "ghost"]) == {"known": "Name"}
+
+
 def test_context_manager_survives_bad_host():
     with DwDatabase(label="t", server="no.such.host", database="nope", timeout=1) as db:
         assert db.lookup("T", "id", "name", ["a"]) == {}

@@ -189,7 +189,10 @@ class DwDatabase:
         cache = self._cache.setdefault(ck, {})
         todo = sorted(wanted - cache.keys())
         if not todo:
-            return {k: cache[k] for k in wanted if k in cache}
+            # Filter negative-cached misses (None) here too — "unknown ids are
+            # simply absent" must hold on the fully-cached path as well.
+            # (Caught by the live SQL matrix on all three engine versions.)
+            return {k: cache[k] for k in wanted if cache.get(k)}
 
         t = f"{_quote_ident(schema)}.{_quote_ident(table)}"
         ic, nc = _quote_ident(id_col), _quote_ident(name_col)
