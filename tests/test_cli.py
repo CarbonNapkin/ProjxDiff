@@ -146,23 +146,31 @@ def test_extract_driveprojx_rejects_zip_slip(tmp_path):  # security regression
         cli.cleanup_temp_dirs()
 
 
+def _patch_home(monkeypatch, path):
+    """Point the home directory at `path` on every platform: Path.home() reads
+    HOME on POSIX but USERPROFILE on Windows — patching only HOME silently
+    does nothing on a Windows runner and the real Downloads folder wins."""
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+
+
 def test_resolve_output_path_relative_anchors_to_writable_dir(tmp_path, monkeypatch):
     # REGRESSION: a double-clicked app runs with a read-only cwd ('/' on macOS).
     # A bare filename must resolve to a writable folder, NOT the cwd.
-    monkeypatch.setenv("HOME", str(tmp_path))  # no Downloads -> falls back to home
+    _patch_home(monkeypatch, tmp_path)  # no Downloads -> falls back to home
     p = cli.resolve_output_path("dw_comparison.html")
     assert p.is_absolute()
     assert p == tmp_path / "dw_comparison.html"
 
 
 def test_resolve_output_path_empty_uses_default_name(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_home(monkeypatch, tmp_path)
     assert cli.resolve_output_path("") == tmp_path / "dw_comparison.html"
     assert cli.resolve_output_path("   ") == tmp_path / "dw_comparison.html"
 
 
 def test_resolve_output_path_prefers_downloads(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_home(monkeypatch, tmp_path)
     (tmp_path / "Downloads").mkdir()
     assert cli.resolve_output_path("r.html") == tmp_path / "Downloads" / "r.html"
 
