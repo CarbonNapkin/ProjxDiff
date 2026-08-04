@@ -79,8 +79,8 @@ class CompareApp:
         root.title(APP_TITLE)
         # Compact by default; the log pane is hidden (View ▸ Show Log) and the
         # window grows to fit it when shown.
-        self._geom_compact = '720x320'
-        self._geom_with_log = '720x560'
+        self._geom_compact = '760x392'
+        self._geom_with_log = '760x620'
         root.geometry(self._geom_compact)
         self.show_log = BooleanVar(value=False)
         self._busy = False
@@ -229,21 +229,35 @@ class CompareApp:
     def _build_ui(self) -> None:
         # Plain tk widgets (not ttk) because ttk + Tk 8.5 on modern macOS often
         # renders as an empty / black frame. tk widgets are uglier but draw.
-        pad = {'padx': 8, 'pady': 6}
-        bg = '#f4f4f4'
-        self.root.configure(bg=bg)
+        self.root.configure(bg=_SM_BG)
 
-        frm = tk.Frame(self.root, bg=bg, padx=12, pady=12)
+        # Header bar — same look as the Manage Nightly Sync window, so the app
+        # reads as one consistent piece.
+        header = tk.Frame(self.root, bg=_SM_HEADER_BG)
+        header.pack(side='top', fill='x')
+        tk.Label(header, text='Projx Diff', bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
+                 font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=16, pady=(10, 0))
+        tk.Label(header, text='Compare two DriveWorks™ projects into one shareable report',
+                 bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
+                 font=('TkDefaultFont', 9)).pack(anchor='w', padx=16, pady=(1, 10))
+
+        pad = {'padx': 8, 'pady': 6}
+        bg = _SM_BG
+
+        frm = tk.Frame(self.root, bg=bg, padx=14, pady=12)
         frm.pack(fill='both', expand=True)
 
         def label(text, **kw):
-            return tk.Label(frm, text=text, bg=bg, anchor='w', **kw)
+            return tk.Label(frm, text=text, bg=bg, fg=_SM_TEXT, anchor='w', **kw)
 
         def entry(var):
-            return tk.Entry(frm, textvariable=var, highlightthickness=1, relief='solid', bd=1)
+            return tk.Entry(frm, textvariable=var, highlightthickness=1,
+                            highlightcolor=_SM_ACCENT, relief='solid', bd=1)
 
         def button(text, cmd):
-            return tk.Button(frm, text=text, command=cmd, highlightthickness=0)
+            return tk.Button(frm, text=text, command=cmd, highlightthickness=0,
+                             relief='flat', bg='#e6e8ec', activebackground='#dcdfe4',
+                             cursor='hand2', padx=10, pady=3)
 
         self._frm = frm
         self.old_entry = entry(self.old_path)
@@ -264,13 +278,15 @@ class CompareApp:
 
         tk.Checkbutton(
             frm, text='Open report in browser when done',
-            variable=self.open_in_browser, bg=bg, anchor='w',
-            highlightthickness=0,
+            variable=self.open_in_browser, bg=bg, fg=_SM_TEXT, anchor='w',
+            highlightthickness=0, activebackground=bg, selectcolor='#ffffff',
         ).grid(row=3, column=1, sticky='w', **pad)
 
         self.compare_btn = tk.Button(
             frm, text='Compare', command=self._on_compare,
-            highlightthickness=0, font=('TkDefaultFont', 13, 'bold'),
+            highlightthickness=0, relief='flat', bg=_SM_ACCENT, fg='#ffffff',
+            activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
+            font=('TkDefaultFont', 13, 'bold'), cursor='hand2', pady=4,
         )
         self.compare_btn.grid(row=3, column=2, columnspan=2, sticky='ew', **pad)
 

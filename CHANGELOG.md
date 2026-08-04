@@ -4,6 +4,16 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.3] - 2026-08-04
+
+### Changed
+
+- **Main window restyled to match the Manage Nightly Sync dialog** — a header
+  bar and the shared flat palette (accent Compare button, consistent entry and
+  button styling) so the whole app reads as one cohesive piece. Plain-tk, so it
+  still renders on older macOS Tk (button fills may fall back to native styling
+  on macOS Aqua, which is expected).
+
 ## [1.2.2] - 2026-08-04
 
 ### Changed
