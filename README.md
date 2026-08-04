@@ -185,8 +185,11 @@ Artifact lands at `dist\ProjxDiff.exe`.
 ### Releases
 
 Tag a commit `v1.x.x` and push the tag. The GitHub Actions workflow at
-`.github/workflows/release.yml` builds Windows and macOS binaries on the
-matching runners, drafts a release, and attaches the artifacts.
+`.github/workflows/release.yml` builds and smoke-tests binaries on the
+matching runners — a Windows installer (`ProjxDiff-setup.exe`, Inno Setup,
+with Start Menu entry and uninstaller) plus the portable `ProjxDiff.exe`,
+`ProjxDiff-macos.zip`, and a `ProjxDiff-linux` binary for headless servers —
+then drafts a release with all four attached.
 
 ```bash
 git tag v1.0.0

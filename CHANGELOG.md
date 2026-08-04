@@ -26,6 +26,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - **App icon** — `assets/` now ships the Projx Diff icon (two overlapping
   project pages with removed/added marks); the packaged .exe/.app and the
   live window pick it up automatically.
+- **Windows installer** (`ProjxDiff-setup.exe`, Inno Setup) — Program Files
+  install, Start Menu entry, optional desktop shortcut, and a clean
+  uninstaller, so the app shows up where Windows users expect instead of
+  living as a loose portable .exe (which is still published for those who
+  prefer it). No `.driveprojx` file association is registered — that
+  extension belongs to DriveWorks. The release workflow compiles the
+  installer and verifies it end-to-end: silent install, then a real `--sync`
+  run from the installed copy.
+- **Linux binary** (`ProjxDiff-linux`) — for running the nightly sync on
+  Linux servers without a Python install. Built and smoke-tested in the
+  release workflow alongside the Windows and macOS artifacts.
 
 Legacy single-source configs, censuses, report layouts, and databases
 behave exactly as before; site features activate only when a config

@@ -43,6 +43,10 @@ jobs:
             artifact_path: dist/ProjxDiff.app
             artifact_filename: ProjxDiff-macos.zip
             zip_app: true
+          - os: ubuntu-latest
+            target_name: linux
+            artifact_path: dist/ProjxDiff-linux
+            artifact_filename: ProjxDiff-linux
 
     steps:
       - uses: actions/checkout@v6
@@ -82,6 +86,47 @@ jobs:
           cat smoke/data/sync.log
           test -d smoke/repo/Smoke
 
+      - name: Smoke test binary (Linux)
+        if: matrix.target_name == 'linux'
+        run: |
+          python scripts/make_smoke_site.py smoke
+          dist/ProjxDiff --sync smoke/config.json
+          cat smoke/data/sync.log
+          test -d smoke/repo/Smoke
+          cp dist/ProjxDiff dist/ProjxDiff-linux
+
+      # Build the Windows installer from the smoke-tested exe, then prove the
+      # installer itself works: silent install, then run the INSTALLED copy
+      # through a real --sync.
+      - name: Build installer (Windows)
+        if: matrix.target_name == 'windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $version = (Select-String -Path dw_compare/_version.py -Pattern "__version__\s*=\s*'([^']+)'").Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$version scripts\installer\ProjxDiff.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test installer (Windows)
+        if: matrix.target_name == 'windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\ProjxDiff-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\ProjxDiffInstallTest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "silent install failed"; exit 1 }
+          if (-not (Test-Path "C:\ProjxDiffInstallTest\ProjxDiff.exe")) { Write-Error "installed exe missing"; exit 1 }
+          python scripts/make_smoke_site.py smoke-installed
+          $q = Start-Process -FilePath "C:\ProjxDiffInstallTest\ProjxDiff.exe" -ArgumentList "--sync","smoke-installed\config.json" -Wait -PassThru -NoNewWindow
+          Get-Content smoke-installed\data\sync.log -ErrorAction SilentlyContinue
+          if ($q.ExitCode -ne 0) { Write-Error "installed exe failed to sync"; exit 1 }
+
+      - name: Upload installer artifact
+        if: matrix.target_name == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ProjxDiff-setup.exe
+          path: dist/ProjxDiff-setup.exe
+          if-no-files-found: error
+
       - name: Zip macOS app bundle
         if: matrix.zip_app == true
         run: |
@@ -117,12 +162,26 @@ jobs:
           name: ProjxDiff-macos.zip
           path: artifacts
 
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ProjxDiff-linux
+          path: artifacts
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ProjxDiff-setup.exe
+          path: artifacts
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: |
+            artifacts/ProjxDiff-setup.exe
             artifacts/ProjxDiff.exe
             artifacts/ProjxDiff-macos.zip
+            artifacts/ProjxDiff-linux
           body_path: CHANGELOG.md
           generate_release_notes: false
           draft: true
