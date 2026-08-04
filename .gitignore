@@ -16,4 +16,7 @@ build_version_info.txt
 dw_comparison.html
 
 # Test/temp project files (large customer data, not for vcs)
+# Pattern, not a filename: real customer projects must never be committed.
+# Tests use synthetic inline XML fixtures instead.
+*.driveprojx
 Model 630.driveprojx
