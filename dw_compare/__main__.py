@@ -19,7 +19,7 @@ from ._version import __version__
 from .parsers import load_project
 from .report import generate_html_report
 from .jsondiff import build_diff
-from .update_check import check_for_update, RELEASES_PAGE
+from .update_check import check_for_update, DOWNLOAD_PAGE
 
 # Track temp dirs for cleanup
 _temp_dirs = []
@@ -299,7 +299,7 @@ Examples:
     # Free, fail-silent update check (notify only — never downloads/installs).
     newer = check_for_update()
     if newer:
-        print(f"\nℹ️  Update available: v{newer} — {RELEASES_PAGE}")
+        print(f"\nℹ️  Update available: v{newer} — {DOWNLOAD_PAGE}")
 
     # Auto-open in browser. Use as_uri() so the file:// URL is well-formed on
     # Windows (drive letters / backslashes) and has spaces percent-encoded.

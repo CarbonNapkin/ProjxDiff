@@ -24,7 +24,7 @@ from tkinter.scrolledtext import ScrolledText
 from ._version import __version__, __author__, __url__, __license__
 from .parsers import load_project
 from .report import generate_html_report
-from .update_check import check_for_update, RELEASES_PAGE
+from .update_check import check_for_update, DOWNLOAD_PAGE
 
 try:
     from .__main__ import resolve_input, cleanup_temp_dirs, resolve_output_path
@@ -662,7 +662,7 @@ class CompareApp:
 
     def _show_update(self, newer: str) -> None:
         self.update_label.configure(text=f'⬆ Update available: v{newer} — click to download')
-        self.update_label.bind('<Button-1>', lambda _e: webbrowser.open(RELEASES_PAGE))
+        self.update_label.bind('<Button-1>', lambda _e: webbrowser.open(DOWNLOAD_PAGE))
 
 
 class _SyncManager:

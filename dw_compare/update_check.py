@@ -16,6 +16,11 @@ from ._version import __version__, __url__
 _LATEST_API = __url__.rstrip('/').replace('github.com', 'api.github.com/repos') + '/releases/latest'
 RELEASES_PAGE = __url__.rstrip('/') + '/releases/latest'
 
+# Where update notices send humans. The version *check* stays on the GitHub
+# API (it's the source of truth for what's published), but the click lands on
+# our download page rather than tossing users into a GitHub repo.
+DOWNLOAD_PAGE = 'https://base10consultants.com/tools/projx-diff/'
+
 
 def _as_tuple(v: str) -> tuple:
     out = []
