@@ -565,7 +565,11 @@ class _SyncManager:
         header.pack(side='top', fill='x')
         tk.Label(header, text='Manage Nightly Sync', bg=_SM_HEADER_BG, fg=_SM_HEADER_FG,
                  font=('TkDefaultFont', 15, 'bold')).pack(anchor='w', padx=18, pady=(12, 0))
-        tk.Label(header, text=f'{self.cfg.get("source_dir", "")}  ·  {self.cpath}',
+        # Site configs have several source dirs; legacy has one.
+        resolved = self.cfg.get('sources_resolved') or {}
+        dirs = ', '.join(f'{n}: {s["source_dir"]}' if n else str(s['source_dir'])
+                         for n, s in resolved.items()) or self.cfg.get('source_dir', '')
+        tk.Label(header, text=f'{dirs}  ·  {self.cpath}',
                  bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
                  font=('TkDefaultFont', 9)).pack(anchor='w', padx=18, pady=(1, 12))
 
@@ -605,10 +609,21 @@ class _SyncManager:
         tk.Button(bar, text='Cancel', command=self.top.destroy, bg='#e6e8ec',
                   relief='flat', padx=16, pady=6, cursor='hand2').pack(side='right', padx=8)
 
+    def _source_root(self, key: str) -> Path:
+        """Source dir for a census key. Site configs namespace keys as
+        "<source>/<project>"; legacy keys are plain names under the single
+        source. Guarded so missing config data degrades to '—' metadata
+        rather than crashing."""
+        resolved = self.cfg.get('sources_resolved') or {}
+        if '/' in key:
+            sname = key.split('/', 1)[0]
+            if sname in resolved:
+                return Path(resolved[sname]['source_dir'])
+        if '' in resolved:
+            return Path(resolved['']['source_dir'])
+        return Path(self.cfg.get('source_dir', ''))
+
     def _build_table(self) -> None:
-        # Real configs always carry source_dir (load_config validates it); guard
-        # anyway so the dialog degrades to '—' metadata rather than crashing.
-        source = Path(self.cfg.get('source_dir', ''))
 
         outer = tk.Frame(self.top, bg=_SM_CARD, highlightbackground=_SM_DIVIDER,
                          highlightthickness=1)
@@ -646,7 +661,7 @@ class _SyncManager:
         for name in sorted(self.census['projects'].keys()):
             entry = self.census['projects'][name]
             rel = entry.get('path', '')
-            modified, saver = self._file_meta(source / rel)
+            modified, saver = self._file_meta(self._source_root(name) / rel)
             var = StringVar(value=self._DISP_TO_LABEL.get(entry.get('disposition', 'pending'), 'New'))
             self.proj_vars[name] = var
             cells = [

@@ -128,45 +128,64 @@ def _display_name(owner: str) -> str:
     return (owner or '').split('<')[0].strip() or '(unassigned)'
 
 
-def _collect(conn: sqlite3.Connection, today: date) -> dict:
+def _has_source_column(conn: sqlite3.Connection) -> bool:
+    return any(row[1] == 'source'
+               for row in conn.execute('PRAGMA table_info(category_changes)'))
+
+
+def _collect(conn: sqlite3.Connection, today: date, source: str = None) -> dict:
+    """Chart/tile data, optionally filtered to one source (site configs)."""
     q = conn.execute
     time_cut = (today - timedelta(days=TIME_WINDOW_DAYS - 1)).isoformat()
     rank_cut = (today - timedelta(days=RANK_WINDOW_DAYS - 1)).isoformat()
     week_cut = (today - timedelta(days=6)).isoformat()
 
+    src = ' AND source = ?' if source is not None else ''
+
+    def params(*base):
+        return base + ((source,) if source is not None else ())
+
     daily = dict(q('SELECT run_date, SUM(added+removed+modified) FROM category_changes '
-                   'WHERE run_date >= ? GROUP BY run_date', (time_cut,)).fetchall())
+                   f'WHERE run_date >= ?{src} GROUP BY run_date',
+                   params(time_cut)).fetchall())
 
     def ranked(col, cut, limit=10):
         rows = q(f'SELECT {col}, SUM(added+removed+modified) AS n FROM category_changes '
-                 f'WHERE run_date >= ? GROUP BY {col} ORDER BY n DESC LIMIT ?',
-                 (cut, limit)).fetchall()
+                 f'WHERE run_date >= ?{src} GROUP BY {col} ORDER BY n DESC LIMIT {int(limit)}',
+                 params(cut)).fetchall()
         return [(r[0] or '(unassigned)', r[1]) for r in rows]
 
     owners = [(_display_name(o), n) for o, n in ranked('owner', rank_cut)]
     categories = [(CATEGORY_LABELS.get(c, c), n) for c, n in ranked('category', rank_cut)]
-
-    recent = q('SELECT run_date, project, owner, SUM(added), SUM(removed), SUM(modified) '
-               'FROM category_changes GROUP BY run_date, project '
-               'ORDER BY run_date DESC, project LIMIT ?', (RECENT_ROWS,)).fetchall()
-
-    last_run = q('SELECT run_date, finished_at, projects_seen, projects_changed, errors '
-                 'FROM runs ORDER BY id DESC LIMIT 1').fetchone()
 
     return {
         'daily': daily,
         'projects': ranked('project', rank_cut),
         'owners': owners,
         'categories': categories,
-        'recent': recent,
-        'last_run': last_run,
         'last_night': q('SELECT COALESCE(SUM(added+removed+modified), 0) FROM category_changes '
-                        'WHERE run_date = (SELECT MAX(run_date) FROM category_changes)').fetchone()[0],
+                        'WHERE run_date = (SELECT MAX(run_date) FROM category_changes)'
+                        f'{src}', params()).fetchone()[0],
         'changes_30d': q('SELECT COALESCE(SUM(added+removed+modified), 0) '
-                         'FROM category_changes WHERE run_date >= ?', (rank_cut,)).fetchone()[0],
+                         f'FROM category_changes WHERE run_date >= ?{src}',
+                         params(rank_cut)).fetchone()[0],
         'active_7d': q('SELECT COUNT(DISTINCT project) FROM category_changes '
-                       'WHERE run_date >= ?', (week_cut,)).fetchone()[0],
+                       f'WHERE run_date >= ?{src}', params(week_cut)).fetchone()[0],
+        'active_30d': q('SELECT COUNT(DISTINCT project) FROM category_changes '
+                        f'WHERE run_date >= ?{src}', params(rank_cut)).fetchone()[0],
     }
+
+
+def _collect_globals(conn: sqlite3.Connection, has_source: bool) -> dict:
+    q = conn.execute
+    src_col = 'source' if has_source else "''"
+    recent = q(f'SELECT run_date, project, owner, SUM(added), SUM(removed), '
+               f'SUM(modified), {src_col} FROM category_changes '
+               f'GROUP BY run_date, {src_col}, project '
+               'ORDER BY run_date DESC, project LIMIT ?', (RECENT_ROWS,)).fetchall()
+    last_run = q('SELECT run_date, finished_at, projects_seen, projects_changed, errors '
+                 'FROM runs ORDER BY id DESC LIMIT 1').fetchone()
+    return {'recent': recent, 'last_run': last_run}
 
 
 def _attention_html(census: dict) -> str:
@@ -249,6 +268,11 @@ a { color: var(--series); }
 .err { color: var(--critical); font-size: 13px; }
 .empty { color: var(--muted); font-size: 13px; }
 .muted { color: var(--muted); }
+.tabs { display: flex; gap: 6px; margin: 0 0 14px; }
+.tab { border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
+  border-radius: 8px; padding: 6px 16px; font: inherit; font-size: 13px;
+  font-weight: 600; cursor: pointer; }
+.tab.active { background: var(--series); border-color: var(--series); color: #fff; }
 #tip { position: absolute; display: none; pointer-events: none; z-index: 10;
   background: var(--ink); color: var(--page); font-size: 12px;
   padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
@@ -266,15 +290,64 @@ document.querySelectorAll('[data-tip]').forEach(el => {
   });
   el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
 });
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.scope').forEach(s => {
+      s.style.display = (s.id === btn.dataset.scope) ? '' : 'none';
+    });
+  });
+});
 """
 
 
+def _scope_sections(d: dict, days: list) -> str:
+    """Tiles + charts for one scope (all data, or one source's slice)."""
+    tiles = f'''<div class="tiles">
+      <div class="card tile"><div class="v">{d['last_night']}</div><div class="l">changes, latest active night</div></div>
+      <div class="card tile"><div class="v">{d['changes_30d']}</div><div class="l">changes, last {RANK_WINDOW_DAYS} days</div></div>
+      <div class="card tile"><div class="v">{d['active_7d']}</div><div class="l">projects active, last 7 days</div></div>
+      <div class="card tile"><div class="v">{d['active_30d']}</div><div class="l">projects active, last {RANK_WINDOW_DAYS} days</div></div>
+    </div>'''
+
+    if any(d['daily'].values()):
+        activity = _daily_chart(days, d['daily'])
+    else:
+        activity = ('<p class="empty">No activity recorded yet — this fills in after '
+                    'the first nightly sync that finds changes.</p>')
+
+    return f'''{tiles}
+<section class="card">
+  <h2>Changes per day &middot; last {TIME_WINDOW_DAYS} days</h2>
+  {activity}
+</section>
+<div class="row">
+  <div class="card"><h2>Top projects &middot; {RANK_WINDOW_DAYS}d</h2>
+    {_rank_chart(d['projects'], 'Changes by project')}</div>
+  <div class="card"><h2>By user &middot; {RANK_WINDOW_DAYS}d</h2>
+    {_rank_chart(d['owners'], 'Changes by user')}</div>
+  <div class="card"><h2>By category &middot; {RANK_WINDOW_DAYS}d</h2>
+    {_rank_chart(d['categories'], 'Changes by category')}</div>
+</div>'''
+
+
 def generate_dashboard(db_path: Path, census_path: Path = None,
-                       today: date = None) -> str:
+                       today: date = None, sources: list = None) -> str:
+    """Render the dashboard. `sources` (a list of source names from a site
+    config) turns on the source tabs; None keeps the legacy single-source
+    layout byte-compatible."""
     today = today or date.today()
     conn = sqlite3.connect(db_path)
     try:
-        d = _collect(conn, today)
+        has_source = _has_source_column(conn)
+        multi = bool(sources) and has_source
+        g = _collect_globals(conn, has_source)
+        if multi:
+            scoped = {'All': _collect(conn, today)}
+            for s in sources:
+                scoped[s] = _collect(conn, today, source=s)
+        else:
+            scoped = {'All': _collect(conn, today)}
     finally:
         conn.close()
 
@@ -284,8 +357,8 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
     days = [(today - timedelta(days=i)).isoformat()
             for i in range(TIME_WINDOW_DAYS - 1, -1, -1)]
 
-    if d['last_run']:
-        run_date, finished, seen, changed, errors = d['last_run']
+    if g['last_run']:
+        run_date, finished, seen, changed, errors = g['last_run']
         status = (f'Last sync {escape(run_date)} — {seen} project(s) scanned, '
                   f'{changed} changed.')
         err_html = (f'<p class="err">&#9888; Last run had errors: {escape(errors)}</p>'
@@ -294,29 +367,33 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
         status = 'No sync runs recorded yet.'
         err_html = ''
 
-    tiles = f'''<div class="tiles">
-      <div class="card tile"><div class="v">{d['last_night']}</div><div class="l">changes, latest active night</div></div>
-      <div class="card tile"><div class="v">{d['changes_30d']}</div><div class="l">changes, last {RANK_WINDOW_DAYS} days</div></div>
-      <div class="card tile"><div class="v">{d['active_7d']}</div><div class="l">projects active, last 7 days</div></div>
-      <div class="card tile"><div class="v">{d['last_run'][2] if d['last_run'] else 0}</div><div class="l">projects tracked</div></div>
-    </div>'''
-
-    if any(d['daily'].values()):
-        activity = _daily_chart(days, d['daily'])
+    if multi:
+        tabs = '<div class="tabs">' + ''.join(
+            f'<button class="tab{" active" if name == "All" else ""}" '
+            f'data-scope="scope-{i}">{escape(name)}</button>'
+            for i, name in enumerate(scoped)) + '</div>'
+        scopes_html = ''.join(
+            f'<div class="scope" id="scope-{i}"'
+            f'{"" if name == "All" else " style=\"display:none\""}>'
+            f'{_scope_sections(d, days)}</div>'
+            for i, (name, d) in enumerate(scoped.items()))
     else:
-        activity = ('<p class="empty">No activity recorded yet — this fills in after '
-                    'the first nightly sync that finds changes.</p>')
+        tabs = ''
+        scopes_html = _scope_sections(scoped['All'], days)
 
     rows_html = []
-    for run_date, project, owner, a, r, m in d['recent']:
+    for run_date, project, owner, a, r, m, src in g['recent']:
         owner_disp = (owner or '').split('<')[0].strip() or '—'
-        href = f'reports/{quote(run_date)}/{quote(project)}.html'
+        href = (f'reports/{quote(src)}/{quote(run_date)}/{quote(project)}.html'
+                if src else f'reports/{quote(run_date)}/{quote(project)}.html')
+        src_cell = f'<td>{escape(src or "—")}</td>' if multi else ''
         rows_html.append(
-            f'<tr><td>{escape(run_date)}</td><td>{escape(project)}</td>'
+            f'<tr><td>{escape(run_date)}</td>{src_cell}<td>{escape(project)}</td>'
             f'<td>{escape(owner_disp)}</td>'
             f'<td class="n">+{a}</td><td class="n">-{r}</td><td class="n">~{m}</td>'
             f'<td><a href="{href}">report</a></td></tr>')
-    recent_html = ('<table><thead><tr><th>Date</th><th>Project</th><th>User</th>'
+    src_head = '<th>Source</th>' if multi else ''
+    recent_html = (f'<table><thead><tr><th>Date</th>{src_head}<th>Project</th><th>User</th>'
                    '<th>Added</th><th>Removed</th><th>Modified</th><th></th></tr></thead>'
                    f'<tbody>{"".join(rows_html)}</tbody></table>' if rows_html
                    else '<p class="empty">No changes recorded yet.</p>')
@@ -334,19 +411,8 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
 <p class="sub">{status} Generated {escape(datetime.now().strftime('%Y-%m-%d %H:%M'))}.</p>
 {err_html}
 {_attention_html(census)}
-{tiles}
-<section class="card">
-  <h2>Changes per day &middot; last {TIME_WINDOW_DAYS} days</h2>
-  {activity}
-</section>
-<div class="row">
-  <div class="card"><h2>Top projects &middot; {RANK_WINDOW_DAYS}d</h2>
-    {_rank_chart(d['projects'], 'Changes by project')}</div>
-  <div class="card"><h2>By user &middot; {RANK_WINDOW_DAYS}d</h2>
-    {_rank_chart(d['owners'], 'Changes by user')}</div>
-  <div class="card"><h2>By category &middot; {RANK_WINDOW_DAYS}d</h2>
-    {_rank_chart(d['categories'], 'Changes by category')}</div>
-</div>
+{tabs}
+{scopes_html}
 <section class="card">
   <h2>Recent changes</h2>
   {recent_html}
@@ -371,8 +437,10 @@ def main(argv=None) -> int:
     cfg = json.loads(args.config.read_text(encoding='utf-8'))
     data_dir = Path(cfg['data_dir'])
     cpath = Path(cfg['census_path']) if cfg.get('census_path') else data_dir / 'census.json'
+    sources = list(cfg['sources']) if cfg.get('sources') else None
     out = args.output or data_dir / 'dashboard.html'
-    out.write_text(generate_dashboard(data_dir / 'metrics.sqlite', census_path=cpath),
+    out.write_text(generate_dashboard(data_dir / 'metrics.sqlite', census_path=cpath,
+                                      sources=sources),
                    encoding='utf-8')
     print(f'dashboard written to {out}')
     return 0

@@ -1,0 +1,23 @@
+{
+  "sources": {
+    "prod": {
+      "source_dir": "C:/DriveWorksFiles",
+      "archive_repo": "C:/ProjxArchive/repo-prod",
+      "exclude": ["*archive*", "*/backup/*"]
+    },
+    "staging": {
+      "source_dir": "C:/StagingDriveWorksFiles",
+      "archive_repo": "C:/ProjxArchive/repo-staging"
+    }
+  },
+  "data_dir": "C:/ProjxArchive/data",
+  "recursive": true,
+  "exclude": [],
+  "git_user_name": "Projx Sync",
+  "git_user_email": "projx-sync@base10consultants.com",
+  "push": false,
+  "remote": "",
+  "remove_missing": false,
+  "derive_author_from_file": true,
+  "owners": {}
+}

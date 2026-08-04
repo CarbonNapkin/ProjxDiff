@@ -142,8 +142,14 @@ def resolve_owner(project: str, project_root: Path, cfg: dict, census: dict) -> 
 
     Precedence: explicit config `owners` entry > census users map > legacy
     `author_aliases` > the raw last-saver from the file.
+
+    `project` may be a namespaced census key ("<source>/<name>") under a site
+    config; an `owners` entry matches by the full key or the plain name.
     """
-    override = cfg.get('owners', {}).get(project)
+    owners = cfg.get('owners', {})
+    override = owners.get(project)
+    if not override and '/' in project:
+        override = owners.get(project.split('/', 1)[1])
     if override:
         return override, override, None
     if not cfg.get('derive_author_from_file'):
@@ -178,23 +184,31 @@ def heal_metrics(conn: sqlite3.Connection, census: dict) -> int:
 # ------------------------------------------------------------------ scan ----
 
 def scan(cfg: dict, census: dict, find_projects_fn) -> dict:
-    """Walk the share (honouring config excludes) and the metrics DB, adding
-    every unseen project and display name to the census. Never overwrites
-    existing entries. Returns a summary dict."""
-    source = Path(cfg['source_dir'])
+    """Walk every configured source (honouring excludes) and the metrics DB,
+    adding every unseen project and display name to the census. Never
+    overwrites existing entries. Returns a summary dict."""
+    sources = cfg.get('sources_resolved') or {'': {
+        'source_dir': Path(cfg['source_dir']),
+        'exclude': cfg.get('exclude', []),
+        'recursive': cfg.get('recursive', True),
+    }}
     new_projects, new_users = [], []
 
-    for zip_path in find_projects_fn(source, cfg.get('recursive', True),
-                                     cfg.get('exclude', [])):
-        name = zip_path.stem
-        rel = zip_path.relative_to(source).as_posix()
-        if name not in census['projects']:
-            new_projects.append(name)
-        ensure_project(census, name, rel)
-        display, _email = read_last_saver_from_zip(zip_path)
-        if display and display not in census['users']:
-            new_users.append(display)
-        ensure_user(census, display)
+    for sname, scfg in sources.items():
+        source = Path(scfg['source_dir'])
+        if not source.is_dir():
+            continue
+        for zip_path in find_projects_fn(source, scfg.get('recursive', True),
+                                         scfg.get('exclude', [])):
+            key = f'{sname}/{zip_path.stem}' if sname else zip_path.stem
+            rel = zip_path.relative_to(source).as_posix()
+            if key not in census['projects']:
+                new_projects.append(key)
+            ensure_project(census, key, rel)
+            display, _email = read_last_saver_from_zip(zip_path)
+            if display and display not in census['users']:
+                new_users.append(display)
+            ensure_user(census, display)
 
     # Harvest raw display names already recorded in the metrics DB (from syncs
     # that ran before those users were mapped).

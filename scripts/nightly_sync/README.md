@@ -40,6 +40,39 @@ exe is windowed, so there is no console output; everything goes to
    "removed" event; they stay in the archive unless `remove_missing` is true.
 6. The dashboard is regenerated; `push: true` pushes the archive to `remote`.
 
+## Multiple locations (site config)
+
+When projects live in several trees — prod and staging, or multiple share
+roots — use a **site config**: one file, one scheduled task, one dashboard,
+with a named entry per location (see `config.example.site.json`):
+
+```json
+{
+  "sources": {
+    "prod":    { "source_dir": "C:/DriveWorksFiles",        "archive_repo": "C:/ProjxArchive/repo-prod" },
+    "staging": { "source_dir": "C:/StagingDriveWorksFiles", "archive_repo": "C:/ProjxArchive/repo-staging" }
+  },
+  "data_dir": "C:/ProjxArchive/data"
+}
+```
+
+Each source gets its own archive repo and census namespace
+(`prod/Roof Curb` vs `staging/Roof Curb`), so identical project names in two
+locations never collide — while users, the metrics DB (rows carry a
+`source`), reports (`reports/<source>/<date>/`), and the dashboard stay
+unified. Map a user once and it applies (and heals) everywhere. The
+dashboard grows tabs — All / prod / staging — and a Source column in the
+recent-changes table. Per-source `exclude`/`recursive` override the shared
+top-level values; `owners` entries match either `"Roof Curb"` (all sources)
+or `"prod/Roof Curb"` (one source). An unreachable source is flagged and
+skipped; the others still sync.
+
+Existing single-source configs are untouched by all of this — same behavior,
+paths, and census layout as before. To consolidate two deployed single-source
+setups into one site config, point the site config at a fresh `data_dir`
+(or keep one of the old ones and let the other source's projects register as
+pending on first run), and retire one of the two scheduled tasks.
+
 ## The census (projects & users, managed not hand-written)
 
 `data_dir/census.json` (override with config key `census_path`) is generated

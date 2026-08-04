@@ -29,6 +29,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -56,7 +57,12 @@ LOCK_STALE_S = 6 * 3600
 
 REQUIRED_KEYS = ('source_dir', 'archive_repo', 'data_dir')
 
+# Source names become path segments (archive/report/census namespaces), so
+# they are restricted to filesystem- and URL-safe characters.
+_SOURCE_NAME_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+
 DEFAULTS = {
+    'sources': {},
     'recursive': True,
     'exclude': [],
     'derive_author_from_file': False,
@@ -76,14 +82,63 @@ DEFAULTS = {
 
 
 def load_config(path: Path) -> dict:
+    """Load and validate a sync config. Two shapes are accepted:
+
+    - Legacy single-source: top-level source_dir + archive_repo + data_dir.
+    - Site config: a `sources` map of named environments, each with its own
+      source_dir + archive_repo (and optional exclude/recursive overrides),
+      sharing data_dir and every other setting. Each source syncs into its
+      own archive repo and census namespace ("<name>/<project>"), so the same
+      project name in prod and staging never collides.
+
+    Either way, cfg['sources_resolved'] holds {name: {source_dir,
+    archive_repo, exclude, recursive}} — the legacy shape uses the single
+    name '' so census keys, report paths, and metrics rows stay exactly as
+    they were before site configs existed."""
     cfg = dict(DEFAULTS)
     cfg.update(json.loads(path.read_text(encoding='utf-8')))
+
+    if cfg['sources']:
+        if not cfg.get('data_dir'):
+            raise SystemExit('config error: missing required key(s): data_dir')
+        resolved = {}
+        for name, src in cfg['sources'].items():
+            if not _SOURCE_NAME_RE.match(name):
+                raise SystemExit(f'config error: source name {name!r} must be '
+                                 'letters/digits/underscore/hyphen only')
+            missing = [k for k in ('source_dir', 'archive_repo') if not src.get(k)]
+            if missing:
+                raise SystemExit(f'config error: source "{name}" missing '
+                                 f'{", ".join(missing)}')
+            resolved[name] = {
+                'source_dir': Path(src['source_dir']),
+                'archive_repo': Path(src['archive_repo']),
+                'exclude': src.get('exclude', cfg['exclude']),
+                'recursive': src.get('recursive', cfg['recursive']),
+            }
+        cfg['data_dir'] = Path(cfg['data_dir'])
+        cfg['sources_resolved'] = resolved
+        return cfg
+
     missing = [k for k in REQUIRED_KEYS if not cfg.get(k)]
     if missing:
         raise SystemExit(f'config error: missing required key(s): {", ".join(missing)}')
     for k in ('source_dir', 'archive_repo', 'data_dir'):
         cfg[k] = Path(cfg[k])
+    cfg['sources_resolved'] = {'': {
+        'source_dir': cfg['source_dir'],
+        'archive_repo': cfg['archive_repo'],
+        'exclude': cfg['exclude'],
+        'recursive': cfg['recursive'],
+    }}
     return cfg
+
+
+def census_key(source_name: str, project: str) -> str:
+    """Census key for a project: plain name for legacy configs, namespaced
+    "<source>/<project>" for site configs — the same project name in two
+    sources is two distinct census entries."""
+    return f'{source_name}/{project}' if source_name else project
 
 
 # ------------------------------------------------------------- utilities ----
@@ -214,7 +269,8 @@ CREATE TABLE IF NOT EXISTS category_changes (
     added INTEGER NOT NULL,
     removed INTEGER NOT NULL,
     modified INTEGER NOT NULL,
-    unchanged INTEGER NOT NULL
+    unchanged INTEGER NOT NULL,
+    source TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS element_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,7 +279,8 @@ CREATE TABLE IF NOT EXISTS element_changes (
     owner TEXT,
     category TEXT NOT NULL,
     element TEXT NOT NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_cat_date ON category_changes (run_date, project);
 CREATE INDEX IF NOT EXISTS idx_elem_date ON element_changes (run_date, project);
@@ -236,32 +293,39 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     # leave the metrics DB behind the git commits already made.
     conn = sqlite3.connect(db_path, isolation_level=None)
     conn.executescript(SCHEMA)
+    # Migrate pre-1.3.0 databases in place: the source column arrived with
+    # site configs. Existing rows keep '' — the legacy source name.
+    for table in ('category_changes', 'element_changes'):
+        cols = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+        if 'source' not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL DEFAULT ''")
     return conn
 
 
 def record_diff(conn: sqlite3.Connection, run_date: str, project: str,
-                owner: str, diff: dict) -> None:
+                owner: str, diff: dict, source: str = '') -> None:
     for cat, stats in diff['summary']['categories'].items():
         if stats['added'] or stats['removed'] or stats['modified']:
             conn.execute(
                 'INSERT INTO category_changes (run_date, project, owner, category,'
-                ' added, removed, modified, unchanged) VALUES (?,?,?,?,?,?,?,?)',
+                ' added, removed, modified, unchanged, source) VALUES (?,?,?,?,?,?,?,?,?)',
                 (run_date, project, owner, cat, stats['added'], stats['removed'],
-                 stats['modified'], stats['unchanged']))
+                 stats['modified'], stats['unchanged'], source))
     for rec in diff['changes']:
         conn.execute(
             'INSERT INTO element_changes (run_date, project, owner, category,'
-            ' element, status) VALUES (?,?,?,?,?,?)',
-            (run_date, project, owner, rec['category'], rec['name'], rec['status']))
+            ' element, status, source) VALUES (?,?,?,?,?,?,?)',
+            (run_date, project, owner, rec['category'], rec['name'], rec['status'],
+             source))
 
 
 def record_project_event(conn: sqlite3.Connection, run_date: str, project: str,
-                         owner: str, status: str) -> None:
+                         owner: str, status: str, source: str = '') -> None:
     """A whole project appeared in / vanished from the source share."""
     conn.execute(
         'INSERT INTO element_changes (run_date, project, owner, category,'
-        ' element, status) VALUES (?,?,?,?,?,?)',
-        (run_date, project, owner, 'project', project, status))
+        ' element, status, source) VALUES (?,?,?,?,?,?,?)',
+        (run_date, project, owner, 'project', project, status, source))
 
 
 # ---------------------------------------------------------- attribution ----
@@ -278,9 +342,10 @@ def resolve_author(name: str, project_root: Path, cfg: dict) -> str:
 
 def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
              run_date: str, conn, reports_dir: Path, dry_run: bool,
-             census: dict):
+             census: dict, source: str = ''):
     """Sync a single project. Returns 'changed', 'new', or 'unchanged'."""
     name = zip_path.stem
+    key = census_key(source, name)
 
     local_zip = staging / zip_path.name
     copy_with_retries(zip_path, local_zip)
@@ -292,7 +357,7 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     # changed project is credited to whoever most recently saved it. An
     # unmapped display name is registered in the census (shows up on the
     # dashboard) and recorded raw in the metrics so mapping it later heals.
-    author, owner, unmapped = census_mod.resolve_owner(name, new_dir, cfg, census)
+    author, owner, unmapped = census_mod.resolve_owner(key, new_dir, cfg, census)
     if unmapped and not dry_run:
         census_mod.ensure_user(census, unmapped)
 
@@ -306,23 +371,25 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
         # First appearance: archive it, but record only a project-level event.
         # Diffing against nothing would count every element as "added" and
         # poison the work metrics with a one-time explosion.
-        log.info('[NEW] %s -- adding to archive', name)
+        log.info('[NEW] %s -- adding to archive', key)
         if not dry_run:
             shutil.copytree(new_dir, repo_dir)
             commit_project(repo, name, f'{name}: added to archive', author)
-            record_project_event(conn, run_date, name, owner, 'added')
+            record_project_event(conn, run_date, name, owner, 'added', source)
         return 'new'
 
     old_proj = load_project(repo_dir)
     new_proj = load_project(new_dir)
     diff = build_diff(old_proj, new_proj, f'{name} (previous)', f'{name} (current)')
     s = diff['summary']
-    log.info('[CHANGED] %s: +%d -%d ~%d', name, s['added'], s['removed'], s['modified'])
+    log.info('[CHANGED] %s: +%d -%d ~%d', key, s['added'], s['removed'], s['modified'])
 
     if dry_run:
         return 'changed'
 
-    day_dir = reports_dir / run_date
+    # Site configs namespace the dated report folders by source so the same
+    # project name in two sources cannot clobber the other's report.
+    day_dir = (reports_dir / source / run_date) if source else (reports_dir / run_date)
     day_dir.mkdir(parents=True, exist_ok=True)
     (day_dir / f'{name}.json').write_text(
         json.dumps(diff, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
@@ -330,7 +397,7 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
         generate_html_report(old_proj, new_proj, f'{name} (previous)', f'{name} (current)'),
         encoding='utf-8')
 
-    record_diff(conn, run_date, name, owner, diff)
+    record_diff(conn, run_date, name, owner, diff, source)
 
     shutil.rmtree(repo_dir)
     shutil.copytree(new_dir, repo_dir)
@@ -340,15 +407,17 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     return 'changed'
 
 
-def _already_marked_removed(conn, project: str) -> bool:
+def _already_marked_removed(conn, project: str, source: str = '') -> bool:
     row = conn.execute(
-        "SELECT status FROM element_changes WHERE project=? AND category='project' "
-        'ORDER BY id DESC LIMIT 1', (project,)).fetchone()
+        "SELECT status FROM element_changes WHERE project=? AND source=? "
+        "AND category='project' ORDER BY id DESC LIMIT 1",
+        (project, source)).fetchone()
     return row is not None and row[0] == 'removed'
 
 
 def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
-                   conn, dry_run: bool, census: dict = None) -> list:
+                   conn, dry_run: bool, census: dict = None,
+                   source: str = '') -> list:
     """Projects present in the archive but no longer on the share. The
     "removed" event is recorded once per disappearance, not re-recorded every
     night the project stays gone. Projects the census marks "ignore" are
@@ -360,32 +429,35 @@ def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
             continue
         if d.name in seen:
             continue
-        if census['projects'].get(d.name, {}).get('disposition') == 'ignore':
+        key = census_key(source, d.name)
+        if census['projects'].get(key, {}).get('disposition') == 'ignore':
             continue
         missing.append(d.name)
-        owner = cfg['owners'].get(d.name, '')
+        owner = cfg['owners'].get(key) or cfg['owners'].get(d.name, '')
         if dry_run:
-            log.info('[MISSING] %s -- gone from source (dry run, no action)', d.name)
+            log.info('[MISSING] %s -- gone from source (dry run, no action)', key)
             continue
-        if not _already_marked_removed(conn, d.name):
-            record_project_event(conn, run_date, d.name, owner, 'removed')
+        if not _already_marked_removed(conn, d.name, source):
+            record_project_event(conn, run_date, d.name, owner, 'removed', source)
         if cfg['remove_missing']:
-            log.info('[MISSING] %s -- removing from archive (remove_missing=true)', d.name)
+            log.info('[MISSING] %s -- removing from archive (remove_missing=true)', key)
             shutil.rmtree(d)
             commit_project(repo, d.name, f'{d.name}: removed (gone from source)', owner)
         else:
-            log.info('[MISSING] %s -- gone from source; kept in archive', d.name)
+            log.info('[MISSING] %s -- gone from source; kept in archive', key)
     return missing
 
 
-def _triage(zips: list, source_dir: Path, census: dict, errors: list) -> tuple:
+def _triage(zips: list, source_dir: Path, census: dict, errors: list,
+            source: str = '') -> tuple:
     """Apply census dispositions to the discovered files.
 
-    Returns (to_sync, ignored_count). Grouping by project name: a lone file
-    whose path moved updates the census entry; multiple files sharing a name
-    sync only the census-registered path (or the first, if none registered) —
-    the rest are recorded as conflicts for the attention panel and as run
-    errors (back-compat with the pre-census duplicate handling)."""
+    Returns (to_sync, ignored_count, conflicts). Grouping by project name: a
+    lone file whose path moved updates the census entry; multiple files
+    sharing a name sync only the census-registered path (or the first, if
+    none registered) — the rest are recorded as conflicts for the attention
+    panel and as run errors (back-compat with the pre-census duplicate
+    handling)."""
     by_name = {}
     for z in zips:
         by_name.setdefault(z.stem, []).append(z)
@@ -394,13 +466,14 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list) -> tuple:
     ignored = 0
     conflicts = []
     for name in sorted(by_name):
+        key = census_key(source, name)
         group = sorted(by_name[name])
         rels = [z.relative_to(source_dir).as_posix() for z in group]
-        entry = census_mod.ensure_project(census, name, rels[0])
+        entry = census_mod.ensure_project(census, key, rels[0])
 
         if len(group) == 1:
             if entry.get('path') != rels[0]:
-                log.info('[MOVED] %s: %s -> %s', name, entry.get('path'), rels[0])
+                log.info('[MOVED] %s: %s -> %s', key, entry.get('path'), rels[0])
                 entry['path'] = rels[0]
             chosen = group[0]
         else:
@@ -412,25 +485,73 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list) -> tuple:
                     continue
                 log.error('[DUPLICATE] %s -- name "%s" already taken by %s; '
                           'skipped (resolve in Manage Nightly Sync or add an exclude)',
-                          rel, name, rels[idx])
+                          rel, key, rels[idx])
                 errors.append(f'{z.name}: duplicate project name "{name}" -- skipped')
-                conflicts.append({'project': name, 'path': rel, 'registered': rels[idx]})
+                conflicts.append({'project': key, 'path': rel, 'registered': rels[idx]})
 
         if entry.get('disposition') == 'ignore':
             ignored += 1
             continue
         to_sync.append(chosen)
 
-    census['conflicts'] = conflicts
-    return to_sync, ignored
+    return to_sync, ignored, conflicts
+
+
+def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
+                run_date: str, reports_dir: Path, dry_run: bool,
+                counts: dict, errors: list) -> tuple:
+    """Sync one named source. Returns (files_found, conflicts)."""
+    label = sname or 'source'
+    excluded = []
+    zips = find_projects(scfg['source_dir'], scfg['recursive'],
+                         scfg['exclude'], excluded)
+    log.info('[%s] found %d project file(s) under %s (%d excluded by %d pattern(s))',
+             label, len(zips), scfg['source_dir'], len(excluded), len(scfg['exclude']))
+    # On a dry run, spell out exactly what was skipped and by which pattern
+    # so the exclude list can be audited before it governs a real sync.
+    if dry_run and excluded:
+        for rel, pat in sorted(excluded):
+            log.info('  excluded: %s  [matched "%s"]', rel, pat)
+
+    to_sync, ignored, conflicts = _triage(zips, scfg['source_dir'], census,
+                                          errors, sname)
+    if ignored:
+        log.info('[%s] %d project(s) skipped as census-ignored', label, ignored)
+    seen = {z.stem for z in to_sync}
+
+    staging_root = Path(tempfile.mkdtemp(prefix='projx_sync_'))
+    try:
+        for zip_path in to_sync:
+            try:
+                proj_staging = staging_root / zip_path.stem
+                proj_staging.mkdir()
+                outcome = sync_one(zip_path, scfg['archive_repo'], proj_staging,
+                                   cfg, run_date, conn, reports_dir, dry_run,
+                                   census, sname)
+                counts[outcome] += 1
+            except Exception as e:
+                log.exception('[ERROR] %s: %s', zip_path.name, e)
+                errors.append(f'{zip_path.name}: {e}')
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+    handle_missing(seen, scfg['archive_repo'], cfg, run_date, conn, dry_run,
+                   census, sname)
+    return len(zips), conflicts
 
 
 def run(cfg: dict, dry_run: bool) -> int:
     started = datetime.now()
     run_date = date.today().isoformat()
 
-    if not cfg['source_dir'].is_dir():
-        log.error('source_dir does not exist or is unreachable: %s', cfg['source_dir'])
+    sources = cfg['sources_resolved']
+    legacy = set(sources) == {''}
+
+    # A legacy config's single unreachable source keeps its dedicated exit
+    # code. A site config syncs whatever is reachable and flags the rest.
+    if legacy and not sources['']['source_dir'].is_dir():
+        log.error('source_dir does not exist or is unreachable: %s',
+                  sources['']['source_dir'])
         return 2
 
     data_dir = cfg['data_dir']
@@ -451,7 +572,6 @@ def run(cfg: dict, dry_run: bool) -> int:
 
     conn = None
     try:
-        ensure_repo(cfg['archive_repo'], cfg)
         conn = open_db(data_dir / 'metrics.sqlite')
 
         if not dry_run:
@@ -459,41 +579,26 @@ def run(cfg: dict, dry_run: bool) -> int:
             if healed:
                 log.info('healed %d metrics row(s) with newly mapped identities', healed)
 
-        excluded = []
-        zips = find_projects(cfg['source_dir'], cfg['recursive'], cfg['exclude'], excluded)
-        log.info('found %d project file(s) under %s (%d excluded by %d pattern(s))',
-                 len(zips), cfg['source_dir'], len(excluded), len(cfg['exclude']))
-        # On a dry run, spell out exactly what was skipped and by which pattern
-        # so the exclude list can be audited before it governs a real sync.
-        if dry_run and excluded:
-            for rel, pat in sorted(excluded):
-                log.info('  excluded: %s  [matched "%s"]', rel, pat)
-
         counts = {'changed': 0, 'new': 0, 'unchanged': 0}
         errors = []
+        all_conflicts = []
+        total_found = 0
 
-        to_sync, ignored = _triage(zips, cfg['source_dir'], census, errors)
-        if ignored:
-            log.info('%d project(s) skipped as census-ignored', ignored)
-        seen = {z.stem for z in to_sync}
+        for sname, scfg in sources.items():
+            if not scfg['source_dir'].is_dir():
+                log.error('[%s] source_dir unreachable: %s -- skipping this source',
+                          sname or 'source', scfg['source_dir'])
+                errors.append(f'{sname or "source"}: source_dir unreachable '
+                              f'({scfg["source_dir"]})')
+                continue
+            ensure_repo(scfg['archive_repo'], cfg)
+            found, conflicts = _run_source(sname, scfg, cfg, census, conn,
+                                           run_date, reports_dir, dry_run,
+                                           counts, errors)
+            total_found += found
+            all_conflicts.extend(conflicts)
 
-        staging_root = Path(tempfile.mkdtemp(prefix='projx_sync_'))
-        try:
-            for zip_path in to_sync:
-                try:
-                    proj_staging = staging_root / zip_path.stem
-                    proj_staging.mkdir()
-                    outcome = sync_one(zip_path, cfg['archive_repo'], proj_staging,
-                                       cfg, run_date, conn, reports_dir, dry_run,
-                                       census)
-                    counts[outcome] += 1
-                except Exception as e:
-                    log.exception('[ERROR] %s: %s', zip_path.name, e)
-                    errors.append(f'{zip_path.name}: {e}')
-        finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
-
-        handle_missing(seen, cfg['archive_repo'], cfg, run_date, conn, dry_run, census)
+        census['conflicts'] = all_conflicts
 
         pending = census_mod.pending_projects(census)
         unmapped = census_mod.unmapped_users(census)
@@ -513,26 +618,30 @@ def run(cfg: dict, dry_run: bool) -> int:
                 ' projects_changed, errors) VALUES (?,?,?,?,?,?)',
                 (run_date, started.isoformat(timespec='seconds'),
                  datetime.now().isoformat(timespec='seconds'),
-                 len(zips), counts['changed'], '; '.join(errors)))
+                 total_found, counts['changed'], '; '.join(errors)))
 
             if cfg['dashboard']:
                 try:
                     from . import dashboard
                     out = data_dir / 'dashboard.html'
                     out.write_text(
-                        dashboard.generate_dashboard(data_dir / 'metrics.sqlite',
-                                                     census_path=cpath),
+                        dashboard.generate_dashboard(
+                            data_dir / 'metrics.sqlite', census_path=cpath,
+                            sources=None if legacy else list(sources)),
                         encoding='utf-8')
                     log.info('dashboard regenerated: %s', out)
                 except Exception:
                     log.exception('dashboard generation failed (sync itself succeeded)')
 
             if cfg['push']:
-                proc = git(cfg['archive_repo'], 'push', '-u', 'origin', 'HEAD',
-                           check=False)
-                if proc.returncode != 0:
-                    log.warning('git push failed (sync itself succeeded): %s',
-                                proc.stderr.strip())
+                for sname, scfg in sources.items():
+                    if not (scfg['archive_repo'] / '.git').is_dir():
+                        continue
+                    proc = git(scfg['archive_repo'], 'push', '-u', 'origin', 'HEAD',
+                               check=False)
+                    if proc.returncode != 0:
+                        log.warning('[%s] git push failed (sync itself succeeded): %s',
+                                    sname or 'source', proc.stderr.strip())
 
         log.info('done: %d changed, %d new, %d unchanged, %d error(s)%s',
                  counts['changed'], counts['new'], counts['unchanged'], len(errors),
