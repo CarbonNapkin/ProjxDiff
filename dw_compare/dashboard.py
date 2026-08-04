@@ -372,9 +372,10 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
             f'<button class="tab{" active" if name == "All" else ""}" '
             f'data-scope="scope-{i}">{escape(name)}</button>'
             for i, name in enumerate(scoped)) + '</div>'
-        scopes_html = ''.join(
+        hidden = ' style="display:none"'  # f-string expressions can't hold
+        scopes_html = ''.join(            # backslashes before Python 3.12
             f'<div class="scope" id="scope-{i}"'
-            f'{"" if name == "All" else " style=\"display:none\""}>'
+            f'{"" if name == "All" else hidden}>'
             f'{_scope_sections(d, days)}</div>'
             for i, (name, d) in enumerate(scoped.items()))
     else:
