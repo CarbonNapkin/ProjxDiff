@@ -4,6 +4,33 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-08-04
+
+### Added
+
+- **Site configs: multiple named sources in one config** (`sources` map —
+  see `config.example.site.json`). Prod, staging, and future locations each
+  get their own `source_dir` + `archive_repo` (+ optional exclude/recursive
+  overrides) while sharing one data_dir, census, metrics DB, dashboard, and
+  scheduled task. Census keys are namespaced (`prod/Roof Curb` vs
+  `staging/Roof Curb`) so identical project names in two locations never
+  collide; users stay a single shared map, so mapping an identity once
+  applies — and retroactively heals — across every source. Metrics rows
+  carry a `source` column (pre-existing databases migrate in place); dated
+  reports land under `reports/<source>/`; an unreachable source is flagged
+  and skipped while the rest sync. `owners` entries match by plain name
+  (all sources) or namespaced key (one source).
+- **Dashboard source tabs** — All / per-source views of the tiles and
+  charts, plus a Source column and source-aware report links in the
+  recent-changes table. Single-source dashboards are unchanged.
+- **App icon** — `assets/` now ships the Projx Diff icon (two overlapping
+  project pages with removed/added marks); the packaged .exe/.app and the
+  live window pick it up automatically.
+
+Legacy single-source configs, censuses, report layouts, and databases
+behave exactly as before; site features activate only when a config
+declares `sources`.
+
 ## [1.2.4] - 2026-08-04
 
 ### Added
