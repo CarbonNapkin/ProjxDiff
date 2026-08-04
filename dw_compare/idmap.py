@@ -60,6 +60,10 @@ ID_SOURCES: dict = {
 # version. Same no-guessing rule as above: absent means unconfirmed.
 # --------------------------------------------------------------------------
 ID_SOURCES_BY_DW_VERSION: dict = {
+    # Field-tested baseline: DriveWorks 22 on SQL Server 2022 (16.0.1000.6) —
+    # the file-level analysis in components.py and the SQL connector were
+    # validated against that environment. Populate the "22" entry from a
+    # discover_db.py --dw-version 22 run against that group database.
     # "22": {"component": IdSource(table="...", id_col="...", name_col="...",
     #                              enabled=True), ...},
 }

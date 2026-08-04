@@ -6,6 +6,29 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **One-click in-app updates.** The update notice is now a download button:
+  the app fetches the new version's installer (Windows) or app zip (macOS),
+  verifies it against the release's new `SHA256SUMS.txt` — an unverifiable
+  download is never run — then launches the installer and steps aside
+  (Windows) or reveals the zip in Downloads (macOS). Any failure falls back
+  to the download page. Bonus: app-fetched installers skip the browser's
+  Mark-of-the-Web, so SmartScreen doesn't interrupt the update.
+- **Model/component ID resolution** (from the Solveshop branch, by Wade
+  Anderson): ComponentSet names parsed free from project.xml, placed-
+  component indexing from components/*.xml, and an optional read-only SQL
+  connector that resolves component GUIDs to names from a DriveWorks group
+  database — fail-soft (no pyodbc/driver/DB → raw GUIDs, diff still runs),
+  injection-guarded, batched and cached. Discovery tooling lives in
+  scripts/db/ (`discover_db.py` finds the mapping tables empirically;
+  `preview_models.py` needs no database). Mappings are keyed per DriveWorks
+  major version (`ID_SOURCES_BY_DW_VERSION`); DriveWorks 22 on SQL Server
+  2022 is the field-tested baseline. A new `sql-integration` workflow proves
+  the connector against real SQL Server 2017, 2019, and 2022 engines — and
+  caught (now fixed) a cache-path bug where negative-cached misses leaked as
+  None labels.
+
 ### Changed
 
 - **Update notices now link to the Projx Diff download page** on

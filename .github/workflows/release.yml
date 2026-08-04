@@ -174,6 +174,14 @@ jobs:
           name: ProjxDiff-setup.exe
           path: artifacts
 
+      # The in-app one-click updater verifies its download against this file
+      # and refuses to run anything it cannot verify.
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum ProjxDiff-setup.exe ProjxDiff.exe ProjxDiff-macos.zip ProjxDiff-linux > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
@@ -182,6 +190,7 @@ jobs:
             artifacts/ProjxDiff.exe
             artifacts/ProjxDiff-macos.zip
             artifacts/ProjxDiff-linux
+            artifacts/SHA256SUMS.txt
           body_path: CHANGELOG.md
           generate_release_notes: false
           draft: true

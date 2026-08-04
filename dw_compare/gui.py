@@ -8,10 +8,12 @@ comparison without using the command line.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import webbrowser
@@ -661,8 +663,60 @@ class CompareApp:
                 pass  # window already closed
 
     def _show_update(self, newer: str) -> None:
-        self.update_label.configure(text=f'⬆ Update available: v{newer} — click to download')
-        self.update_label.bind('<Button-1>', lambda _e: webbrowser.open(DOWNLOAD_PAGE))
+        self.update_label.configure(
+            text=f'⬆ Update available: v{newer} — click to download & install')
+        self.update_label.bind('<Button-1>', lambda _e: self._start_update(newer))
+
+    def _start_update(self, newer: str) -> None:
+        """One-click update: download the platform's packaged asset, verify
+        its checksum, then hand off (Windows: run the installer and exit so
+        it can replace us; macOS: reveal the zip in Downloads). Any failure
+        falls back to opening the download page — never a dead end."""
+        self.update_label.unbind('<Button-1>')  # no double-starts
+        threading.Thread(target=self._download_update, args=(newer,),
+                         daemon=True).start()
+
+    def _download_update(self, newer: str) -> None:
+        from .update_check import download_update
+
+        def progress(done, total):
+            note = f'{done * 100 // total}%' if total else f'{done // 1048576} MB'
+            self.root.after(0, lambda: self.update_label.configure(
+                text=f'⬇ Downloading v{newer}…  {note}'))
+
+        try:
+            if sys.platform == 'win32':
+                dest_dir = Path(tempfile.mkdtemp(prefix='projxdiff_update_'))
+            else:
+                dest_dir = Path.home() / 'Downloads'
+            path = download_update(newer, dest_dir, progress=progress)
+        except Exception:
+            # Unverifiable or failed download: back to the website, and the
+            # notice stays clickable for another try.
+            self.root.after(0, lambda: (
+                self.update_label.configure(
+                    text=f'⬆ Update v{newer} — opening the download page…'),
+                self.update_label.bind('<Button-1>',
+                                       lambda _e: webbrowser.open(DOWNLOAD_PAGE)),
+                webbrowser.open(DOWNLOAD_PAGE)))
+            return
+        self.root.after(0, lambda: self._install_update(path))
+
+    def _install_update(self, path: Path) -> None:
+        if sys.platform == 'win32':
+            try:
+                os.startfile(path)      # launch the verified installer...
+            except Exception:
+                webbrowser.open(DOWNLOAD_PAGE)
+                return
+            self.root.destroy()          # ...and get out of its way
+        else:
+            try:
+                subprocess.run(['open', '-R', str(path)], check=False)
+            except Exception:
+                pass
+            self.update_label.configure(
+                text=f'✅ Downloaded to {path.parent} — quit and replace the app to update')
 
 
 class _SyncManager:
