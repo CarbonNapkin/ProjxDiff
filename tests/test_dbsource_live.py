@@ -75,16 +75,22 @@ def seeded_ids():
                     'VALUES (?, ?)', rows[:10])
 
     # GUID-format matrix: the same ids keyed as uniqueidentifier (rejects
-    # dashless strings outright) and as hyphenated-uppercase NVARCHAR.
-    from dw_compare.dbsource import _hyphenated
+    # dashless strings outright), as hyphenated-uppercase NVARCHAR, and as a
+    # byte-order (bytes_le) uniqueidentifier for the 'swapped' encoding.
+    from dw_compare.dbsource import _hyphenated, _encode_guid
     cur.execute('CREATE TABLE dbo.GuidKeyed '
                 '(Id UNIQUEIDENTIFIER PRIMARY KEY, Name NVARCHAR(255) NOT NULL)')
     cur.execute('CREATE TABLE dbo.HyphenKeyed '
                 '(Id NVARCHAR(64) PRIMARY KEY, Name NVARCHAR(255) NOT NULL)')
+    cur.execute('CREATE TABLE dbo.SwappedKeyed '
+                '(Id UNIQUEIDENTIFIER PRIMARY KEY, Name NVARCHAR(255) NOT NULL)')
     cur.executemany('INSERT INTO dbo.GuidKeyed (Id, Name) VALUES (?, ?)',
                     [(_hyphenated(g), n) for g, n in rows[:50]])
     cur.executemany('INSERT INTO dbo.HyphenKeyed (Id, Name) VALUES (?, ?)',
                     [(_hyphenated(g).upper(), n) for g, n in rows[:50]])
+    cur.executemany('INSERT INTO dbo.SwappedKeyed (Id, Name) VALUES (?, ?)',
+                    [(_hyphenated(_encode_guid(g, 'swapped')), n)
+                     for g, n in rows[:50]])
     cur.close()
     conn.close()
     yield ids
@@ -160,6 +166,15 @@ def test_dashless_file_ids_resolve_against_uniqueidentifier_column(db, seeded_id
 def test_dashless_file_ids_resolve_against_hyphenated_nvarchar(db, seeded_ids):
     subset = dict(list(seeded_ids.items())[:50])
     assert db.lookup('HyphenKeyed', 'Id', 'Name', list(subset)) == subset
+
+
+def test_swapped_encoding_resolves_byte_order_keyed_table(db, seeded_ids):
+    # A table keyed on the .NET byte-order form of the file ids: only the
+    # 'swapped' encoding finds them, and callers still get their own keys.
+    subset = dict(list(seeded_ids.items())[:50])
+    assert db.lookup('SwappedKeyed', 'Id', 'Name', list(subset)) == {}
+    got = db.lookup('SwappedKeyed', 'Id', 'Name', list(subset), encoding='swapped')
+    assert got == subset
 
 
 def test_bad_credentials_fail_soft_not_raise(seeded_ids):

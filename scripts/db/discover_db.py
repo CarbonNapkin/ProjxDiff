@@ -74,20 +74,22 @@ def main():
     candidates = db.find_id_name_tables()
     print(f"{len(candidates)} table(s) have both an id-ish and a name-ish column.\n")
 
-    # Sample the ids so we don't build a giant IN() while probing.
+    # Sample the ids so we don't build a giant IN() while probing. Every
+    # candidate is probed in every GUID encoding (plain / byte-order /
+    # base64), so a byte-swapped schema can't hide (DW22 confirmed 'plain').
     probe = list(ids)[:400]
     results = []
     for c in candidates:
         for id_col in c["id_cols"]:
             for name_col in c["name_cols"]:
-                got = db.lookup(c["table"], id_col, name_col, probe, schema=c["schema"])
-                # lookup normalises nothing, but ids in DB may be hyphenated/upper;
-                # match on normalised form for an honest hit-rate.
-                norm_got = {C._norm(k) for k in got}
-                hit = len(norm_got & {C._norm(i) for i in probe})
-                rate = hit / max(1, len(probe))
-                if rate >= args.min_hit:
-                    results.append((rate, c["schema"], c["table"], id_col, name_col, hit))
+                for enc in dbsource.GUID_ENCODINGS:
+                    got = db.lookup(c["table"], id_col, name_col, probe,
+                                    schema=c["schema"], encoding=enc)
+                    hit = len(got)   # lookup keys results by the probed ids
+                    rate = hit / max(1, len(probe))
+                    if rate >= args.min_hit:
+                        results.append((rate, c["schema"], c["table"],
+                                        id_col, name_col, enc, hit))
 
     results.sort(reverse=True)
     if not results:
@@ -97,13 +99,15 @@ def main():
         return
 
     print("Best mapping candidates (highest id hit-rate first):\n")
-    for rate, schema, table, id_col, name_col, hit in results[:8]:
-        print(f"  {rate*100:5.1f}%  {schema}.{table}  ({id_col} -> {name_col})  [{hit} ids]")
+    for rate, schema, table, id_col, name_col, enc, hit in results[:8]:
+        print(f"  {rate*100:5.1f}%  {schema}.{table}  ({id_col} -> {name_col})"
+              f"  encoding={enc}  [{hit} ids]")
 
-    rate, schema, table, id_col, name_col, _ = results[0]
+    rate, schema, table, id_col, name_col, enc, _ = results[0]
+    enc_part = f', encoding="{enc}"' if enc != 'plain' else ''
     entry = ('    "component": IdSource(\n'
              f'        table="{table}", id_col="{id_col}", name_col="{name_col}",\n'
-             f'        schema="{schema}", enabled=True),')
+             f'        schema="{schema}", enabled=True{enc_part}),')
     if args.dw_version:
         key = str(args.dw_version).split(".")[0].strip()
         print(f"\nPaste into dw_compare/idmap.py ID_SOURCES_BY_DW_VERSION:\n")

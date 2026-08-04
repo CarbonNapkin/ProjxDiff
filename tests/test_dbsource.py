@@ -66,6 +66,35 @@ def test_close_is_safe_when_never_connected():
     DwDatabase(label="t", server="x", database="y").close()
 
 
+def test_encode_guid_known_vectors():
+    import base64
+    import uuid
+    from dw_compare.dbsource import _encode_guid
+    n = '00112233445566778899aabbccddeeff'
+    assert _encode_guid(n, 'plain') == n
+    # .NET/uniqueidentifier byte order: first three fields little-endian.
+    assert _encode_guid(n, 'swapped') == '33221100554477668899aabbccddeeff'
+    assert _encode_guid(_encode_guid(n, 'swapped'), 'swapped') == n  # involution
+    assert _encode_guid(n, 'base64') == base64.b64encode(
+        uuid.UUID(hex=n).bytes_le).decode('ascii')
+
+
+def test_lookup_with_swapped_encoding_translates_back(monkeypatch):
+    # DB stores the byte-order form; caller asks with the file's string-order
+    # hex and gets its own key back.
+    db = DwDatabase(label='t', server='x', database='y')
+    stored = '33221100-5544-7766-8899-aabbccddeeff'
+
+    def fake_try(sql, params=()):
+        vals = [v.lower() for v in (params[0] if params else [])]
+        return [(stored, 'Swapped Model')] if stored in vals else []
+
+    monkeypatch.setattr(db, '_try_select', fake_try)
+    requested = '00112233445566778899aabbccddeeff'
+    got = db.lookup('T', 'id', 'name', [requested], encoding='swapped')
+    assert got == {requested: 'Swapped Model'}
+
+
 def test_guid_normalisation_helpers():
     from dw_compare.dbsource import _norm_id, _hyphenated
     n = _norm_id('DDB7BF22-8057-4E4C-9AF4-C51C4BF4A9AF')
@@ -116,7 +145,7 @@ def test_negative_cached_misses_stay_absent_on_cached_path():
     # every wanted id is cached, the early-exit path leaked negative-cached
     # misses as {id: None} instead of omitting them.
     db = DwDatabase(label="t", server="x", database="y")
-    db._cache[("dbo", "T", "id", "name")] = {"known": "Name", "ghost": None}
+    db._cache[("dbo", "T", "id", "name", "plain")] = {"known": "Name", "ghost": None}
     assert db.lookup("T", "id", "name", ["known", "ghost"]) == {"known": "Name"}
 
 

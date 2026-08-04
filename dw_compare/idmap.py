@@ -28,6 +28,9 @@ class IdSource:
     name_col: str
     schema: str = "dbo"
     enabled: bool = False   # flipped True once table/columns are confirmed
+    # How the DB stores the file-side GUID: 'plain' | 'swapped' | 'base64'
+    # (see dbsource.GUID_ENCODINGS). DW22 confirmed 'plain'.
+    encoding: str = "plain"
 
 
 # --------------------------------------------------------------------------
@@ -60,12 +63,21 @@ ID_SOURCES: dict = {
 # version. Same no-guessing rule as above: absent means unconfirmed.
 # --------------------------------------------------------------------------
 ID_SOURCES_BY_DW_VERSION: dict = {
-    # Field-tested baseline: DriveWorks 22 on SQL Server 2022 (16.0.1000.6) —
-    # the file-level analysis in components.py and the SQL connector were
-    # validated against that environment. Populate the "22" entry from a
-    # discover_db.py --dw-version 22 run against that group database.
-    # "22": {"component": IdSource(table="...", id_col="...", name_col="...",
-    #                              enabled=True), ...},
+    # DriveWorks 22 — CONFIRMED 2026-08-04 against a live DW22 group database
+    # (SQL Server 2019, 15.0.4043): 12/12 CCRefs from a real project keyed
+    # dbo.CapturedComponents.Id as plain string-order GUIDs; the identity
+    # column is the master model file Path. Byte-order and base64 encodings
+    # probed and ruled out. TrIds do not key this table (they map to CCRefs
+    # via components/*.xml, per components.py).
+    "22": {
+        "component": IdSource(table="CapturedComponents", id_col="Id",
+                              name_col="Path", schema="dbo", enabled=True),
+        # dbo.Projects (Id uniqueidentifier, Name nvarchar) exists in the DW22
+        # schema; the file-side join has not been probed yet, so it stays off.
+        "project": IdSource(table="Projects", id_col="Id", name_col="Name",
+                            schema="dbo", enabled=False),
+        "model": IdSource(table="", id_col="", name_col="", enabled=False),
+    },
 }
 
 
@@ -102,6 +114,7 @@ class IdResolver:
         mapping = self.db.lookup(
             table=src.table, id_col=src.id_col, name_col=src.name_col,
             ids=ids, schema=src.schema,
+            encoding=getattr(src, 'encoding', 'plain'),
         )
         self.stats["resolved"] += len(mapping)
         self.stats["unresolved"] += len(set(map(str, ids)) - set(mapping))

@@ -20,7 +20,9 @@ Design rules:
 
 from __future__ import annotations
 
+import base64
 import re
+import uuid
 from typing import Iterable
 
 # Identifiers (table/column names) cannot be passed as query parameters, so any
@@ -53,6 +55,26 @@ def _norm_id(s) -> str:
 def _hyphenated(norm32: str) -> str:
     return (f'{norm32[0:8]}-{norm32[8:12]}-{norm32[12:16]}-'
             f'{norm32[16:20]}-{norm32[20:32]}')
+
+
+# A GUID's string form and its .NET/SQL byte form differ: Guid.ToByteArray()
+# (= uniqueidentifier's binary layout) stores the first three fields
+# little-endian, so the same value can legitimately appear as
+# 00112233-... in the XML and 33221100-... (or its base64) in a database
+# column. `encoding` names how the DB stores the file-side value:
+#   'plain'   — same value, any plain format          (default)
+#   'swapped' — .NET byte-order hex                    (bytes_le)
+#   'base64'  — base64 of the .NET byte order
+# discover_db.py probes all three and reports which one actually hits.
+GUID_ENCODINGS = ('plain', 'swapped', 'base64')
+
+
+def _encode_guid(norm32: str, encoding: str) -> str:
+    if encoding == 'swapped':
+        return uuid.UUID(hex=norm32).bytes_le.hex()
+    if encoding == 'base64':
+        return base64.b64encode(uuid.UUID(hex=norm32).bytes_le).decode('ascii')
+    return norm32
 
 
 def _quote_ident(name: str) -> str:
@@ -198,22 +220,25 @@ class DwDatabase:
         name_col: str,
         ids: Iterable,
         schema: str = "dbo",
+        encoding: str = "plain",
     ) -> dict:
         """Resolve {id: name} for the given ids. Unknown ids are simply absent.
 
         GUID-format agnostic: ids may arrive dashless (as the project files
         write them) or hyphenated (as databases return them); matching is by
         normalized value, and the returned keys are the ids as the caller
-        passed them. Results are cached (by normalized id) per
-        (schema, table, id_col, name_col), so repeated calls across sections
-        only query the ids not already seen.
+        passed them. `encoding` names how the DB *stores* the file-side value
+        (see GUID_ENCODINGS): 'swapped' handles the .NET/uniqueidentifier
+        byte-order difference, 'base64' its base64 form. Results are cached
+        (by normalized requested id) per (schema, table, id_col, name_col,
+        encoding), so repeated calls only query ids not already seen.
         """
         wanted = {str(i).strip() for i in ids if i and str(i).strip()}
         if not wanted:
             return {}
 
-        ck = (schema, table, id_col, name_col)
-        cache = self._cache.setdefault(ck, {})   # norm(id) -> name or None
+        ck = (schema, table, id_col, name_col, encoding)
+        cache = self._cache.setdefault(ck, {})   # norm(requested id) -> name/None
         by_norm: dict = {}
         for w in wanted:
             by_norm.setdefault(_norm_id(w), []).append(w)
@@ -225,19 +250,31 @@ class DwDatabase:
             guids = [n for n in todo if _GUID32.match(n)]
             other = [by_norm[n][0] for n in todo if not _GUID32.match(n)]
 
-            # Pass 1: hyphenated form — the ONLY format a uniqueidentifier
-            # column accepts (dashless kills the whole query with a conversion
-            # error), and it also matches hyphenated NVARCHAR storage under
-            # the default case-insensitive collation.
-            self._lookup_chunks(t, ic, nc, ck, 'hyphenated',
-                                [_hyphenated(n) for n in guids], cache)
-            # Pass 2: dashless form for whatever is still unresolved — matches
-            # NVARCHAR that stores bare 32-hex. Skipped for the rest of this
-            # table's lifetime once the column type provably rejects it.
-            still = [n for n in guids if n not in cache]
-            self._lookup_chunks(t, ic, nc, ck, 'dashless', still, cache)
+            if guids and encoding == 'base64':
+                qmap = {}
+                vals = []
+                for n in guids:
+                    q = _encode_guid(n, 'base64')
+                    qmap[_norm_id(q)] = n
+                    vals.append(q)
+                self._lookup_chunks(t, ic, nc, ck, 'base64', vals, cache, qmap)
+            elif guids:
+                # query-form 32-hex -> requested norm ('plain' is identity)
+                qmap = {_encode_guid(n, encoding): n for n in guids}
+                # Pass 1: hyphenated form — the ONLY format a uniqueidentifier
+                # column accepts (dashless kills the whole query with a
+                # conversion error), and it also matches hyphenated NVARCHAR
+                # under the default case-insensitive collation.
+                self._lookup_chunks(t, ic, nc, ck, 'hyphenated',
+                                    [_hyphenated(q) for q in qmap], cache, qmap)
+                # Pass 2: dashless form for whatever is still unresolved —
+                # matches NVARCHAR storing bare 32-hex. Skipped for this
+                # table's lifetime once the column type provably rejects it.
+                still = [q for q, n in qmap.items() if n not in cache]
+                self._lookup_chunks(t, ic, nc, ck, 'dashless', still, cache, qmap)
             if other:
-                self._lookup_chunks(t, ic, nc, ck, 'raw', other, cache)
+                self._lookup_chunks(t, ic, nc, ck, 'raw', other, cache,
+                                    {_norm_id(o): _norm_id(o) for o in other})
 
             # Negative-cache misses so we don't re-query ids this DB lacks.
             for n in todo:
@@ -247,12 +284,13 @@ class DwDatabase:
                 for w in ws}
 
     def _lookup_chunks(self, t: str, ic: str, nc: str, ck, shape: str,
-                       values: list, cache: dict) -> None:
+                       values: list, cache: dict, qmap: dict) -> None:
         """Run chunked IN() queries for one id format ('hyphenated',
-        'dashless', 'raw'), storing results into the cache keyed by
-        normalized id. A format that errors (e.g. dashless strings against a
-        uniqueidentifier column) is remembered and never retried for this
-        table."""
+        'dashless', 'base64', 'raw'). Returned rows are translated back to
+        the *requested* id via qmap {normalized query form -> requested norm}
+        and stored in the cache. A format that errors (e.g. dashless strings
+        against a uniqueidentifier column) is remembered and never retried
+        for this table."""
         if not hasattr(self, '_dead_shapes'):
             self._dead_shapes = set()
         if not values or (ck, shape) in self._dead_shapes:
@@ -268,8 +306,10 @@ class DwDatabase:
             for row in rows:
                 if row[0] is None:
                     continue
-                cache[_norm_id(row[0])] = (
-                    "" if row[1] is None else str(row[1])).strip()
+                requested = qmap.get(_norm_id(row[0]))
+                if requested is not None:
+                    cache[requested] = (
+                        "" if row[1] is None else str(row[1])).strip()
 
     # ---------- discovery ----------
     # Used by `--db-explore` to find which tables actually hold the ID -> name

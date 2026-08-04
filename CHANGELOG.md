@@ -29,6 +29,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   caught (now fixed) a cache-path bug where negative-cached misses leaked as
   None labels.
 
+- **DriveWorks 22 component mapping CONFIRMED against a live group
+  database** (SQL Server 2019, 15.0.4043): 12/12 CCRefs from a real project
+  keyed `dbo.CapturedComponents.Id` as plain string-order GUIDs, with the
+  master model file **Path** as the identity — so resolved labels are the
+  actual SolidWorks files. Byte-order and base64 encodings were probed live
+  and ruled out for DW22; the connector nevertheless supports them
+  (`IdSource.encoding`) and the discovery script now probes every encoding
+  automatically, so a future DriveWorks version with different storage
+  can't hide. `ID_SOURCES_BY_DW_VERSION["22"]` ships enabled.
+
 ### Changed
 
 - **Update notices now link to the Projx Diff download page** on
