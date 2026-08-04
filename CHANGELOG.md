@@ -4,6 +4,18 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-08-04
+
+### Changed
+
+- **Manage Nightly Sync table gains sorting and disposition filters.** Column
+  headers (Project / Path / Modified / Last saved by / Disposition) are
+  click-to-sort with an asc/desc indicator, and a segmented **All / New /
+  Track / Ignore** control filters the list by disposition alongside the text
+  filter. The per-row disposition control is now a flat, color-coded pill
+  (no boxy border). The internal `pending` disposition is shown as **New** in
+  the UI while remaining `pending` in the census data the engine reads.
+
 ## [1.2.1] - 2026-08-04
 
 ### Changed

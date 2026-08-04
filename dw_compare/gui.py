@@ -488,6 +488,14 @@ class _SyncManager:
     _COLS = ('Project', 'Path', 'Modified', 'Last saved by', 'Disposition')
     _COL_WEIGHT = (0, 1, 0, 0, 0)  # only the path column absorbs slack
 
+    # The UI shows "New" for the engine's internal "pending" disposition; the
+    # data model keeps "pending" (that's the value sync.py acts on).
+    _DISP_TO_LABEL = {'pending': 'New', 'track': 'Track', 'ignore': 'Ignore'}
+    _LABEL_TO_DISP = {'New': 'pending', 'Track': 'track', 'Ignore': 'ignore'}
+    _MENU_LABELS = ('New', 'Track', 'Ignore')
+    _DISP_COLORS = {'New': _SM_ACCENT, 'Track': '#1b7a3d', 'Ignore': _SM_MUTED}
+    _FILTERS = (('All', 'all'), ('New', 'New'), ('Track', 'Track'), ('Ignore', 'Ignore'))
+
     def __init__(self, parent, cfg: dict, cpath: Path, census: dict):
         from . import census as census_mod
         self._census_mod = census_mod
@@ -524,15 +532,29 @@ class _SyncManager:
 
     def _build_toolbar(self) -> None:
         bar = tk.Frame(self.top, bg=_SM_BG)
-        bar.pack(side='top', fill='x', padx=16, pady=(12, 4))
+        bar.pack(side='top', fill='x', padx=16, pady=(12, 0))
         tk.Label(bar, text='Filter', bg=_SM_BG, fg=_SM_TEXT).pack(side='left')
         self.filter_var = StringVar()
         entry = tk.Entry(bar, textvariable=self.filter_var, highlightthickness=1,
                          highlightcolor=_SM_ACCENT, relief='solid', bd=1)
         entry.pack(side='left', fill='x', expand=True, padx=(8, 12))
-        self.filter_var.trace_add('write', lambda *_a: self._apply_filter())
+        self.filter_var.trace_add('write', lambda *_a: self._render())
         self.count_label = tk.Label(bar, text='', bg=_SM_BG, fg=_SM_MUTED)
         self.count_label.pack(side='right')
+
+        # Disposition segmented filter: All / New / Track / Ignore.
+        seg = tk.Frame(self.top, bg=_SM_BG)
+        seg.pack(side='top', fill='x', padx=16, pady=(8, 2))
+        tk.Label(seg, text='Show', bg=_SM_BG, fg=_SM_TEXT).pack(side='left', padx=(0, 8))
+        self._disp_filter = 'all'
+        self._disp_buttons: dict[str, tk.Label] = {}
+        for label, value in self._FILTERS:
+            btn = tk.Label(seg, text=label, bg='#e6e8ec', fg=_SM_TEXT, padx=14, pady=3,
+                           cursor='hand2', font=('TkDefaultFont', 9, 'bold'))
+            btn.pack(side='left', padx=(0, 4))
+            btn.bind('<Button-1>', lambda _e, v=value: self._set_disp_filter(v))
+            self._disp_buttons[value] = btn
+        self._style_disp_buttons()
 
     def _build_footer(self) -> None:
         bar = tk.Frame(self.top, bg=_SM_BG)
@@ -567,28 +589,27 @@ class _SyncManager:
             '<MouseWheel>', lambda e: canvas.yview_scroll(int(-e.delta / 120), 'units')))
         canvas.bind('<Leave>', lambda _e: canvas.unbind_all('<MouseWheel>'))
 
-        # Header row + a hairline divider under it.
-        for col, (title, weight) in enumerate(zip(self._COLS, self._COL_WEIGHT)):
-            tk.Label(table, text=title.upper(), bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
-                     font=('TkDefaultFont', 8, 'bold')).grid(
-                row=0, column=col, sticky='w', padx=10, pady=(10, 4))
+        self._table = table
+        # Clickable header row (click to sort, click again to reverse) + divider.
+        self._header_labels: list = []
+        for col, weight in enumerate(self._COL_WEIGHT):
+            lbl = tk.Label(table, bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
+                           font=('TkDefaultFont', 8, 'bold'), cursor='hand2')
+            lbl.grid(row=0, column=col, sticky='w', padx=10, pady=(10, 4))
+            lbl.bind('<Button-1>', lambda _e, c=col: self._sort_by(c))
+            self._header_labels.append(lbl)
             table.columnconfigure(col, weight=weight)
         tk.Frame(table, bg=_SM_DIVIDER, height=1).grid(
             row=1, column=0, columnspan=len(self._COLS), sticky='ew', padx=6)
 
         self.proj_vars: dict[str, StringVar] = {}
-        self._row_cells: dict[str, list] = {}
-        self._row_search: dict[str, str] = {}
-        self._names = sorted(self.census['projects'].keys())
-
-        for i, name in enumerate(self._names):
+        self._rows: list = []
+        for name in sorted(self.census['projects'].keys()):
             entry = self.census['projects'][name]
             rel = entry.get('path', '')
             modified, saver = self._file_meta(source / rel)
-            var = StringVar(value=entry.get('disposition', 'pending'))
+            var = StringVar(value=self._DISP_TO_LABEL.get(entry.get('disposition', 'pending'), 'New'))
             self.proj_vars[name] = var
-
-            r = i + 2
             cells = [
                 tk.Label(table, text=name, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
                          font=('TkDefaultFont', 10, 'bold')),
@@ -597,20 +618,26 @@ class _SyncManager:
                 tk.Label(table, text=saver, bg=_SM_CARD, fg=_SM_TEXT, anchor='w'),
                 self._disposition_menu(table, var),
             ]
-            for col, widget in enumerate(cells):
-                widget.grid(row=r, column=col, sticky='w', padx=10, pady=4)
-            self._row_cells[name] = cells
-            self._row_search[name] = f'{name} {rel} {saver}'.lower()
+            self._rows.append({'name': name, 'rel': rel, 'modified': modified,
+                               'saver': saver, 'var': var, 'cells': cells,
+                               'search': f'{name} {rel} {saver}'.lower()})
 
-        self._update_count(len(self._names), len(self._names))
+        self._sort_col, self._sort_desc = 0, False
+        self._render()
 
     def _disposition_menu(self, parent, var: StringVar) -> tk.OptionMenu:
-        om = tk.OptionMenu(parent, var, *self._census_mod.DISPOSITIONS)
-        om.configure(bg=_SM_CARD, activebackground=_SM_BG, relief='solid', bd=1,
-                     highlightthickness=0, font=('TkDefaultFont', 9), width=8, anchor='w',
-                     cursor='hand2')
+        # Flat, borderless "pill" — no rectangle — with a color-coded label.
+        om = tk.OptionMenu(parent, var, *self._MENU_LABELS)
+        om.configure(relief='flat', bd=0, highlightthickness=0, bg='#eef1f5',
+                     activebackground='#e3e8f0', font=('TkDefaultFont', 9, 'bold'),
+                     width=7, anchor='w', padx=10, cursor='hand2')
         om['menu'].configure(bg=_SM_CARD, activebackground=_SM_ACCENT,
-                             activeforeground='#ffffff')
+                             activeforeground='#ffffff', font=('TkDefaultFont', 9))
+
+        def _recolor(*_a):
+            om.configure(fg=self._DISP_COLORS.get(var.get(), _SM_TEXT))
+        var.trace_add('write', _recolor)
+        _recolor()
         return om
 
     def _build_users_and_conflicts(self) -> None:
@@ -676,15 +703,56 @@ class _SyncManager:
         """Keep the informative tail (folder + filename) of a long path."""
         return text if len(text) <= limit else '…' + text[-(limit - 1):]
 
-    def _apply_filter(self) -> None:
+    def _sort_by(self, col: int) -> None:
+        if col == self._sort_col:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_col, self._sort_desc = col, False
+        self._render()
+
+    def _sort_key(self, row: dict, col: int):
+        if col == 0:
+            return row['name'].lower()
+        if col == 1:
+            return row['rel'].lower()
+        if col == 2:  # missing dates sort to the end
+            return (row['modified'] == '—', row['modified'])
+        if col == 3:
+            return (row['saver'] == '—', row['saver'].lower())
+        return {'New': 0, 'Track': 1, 'Ignore': 2}.get(row['var'].get(), 0)
+
+    def _set_disp_filter(self, value: str) -> None:
+        self._disp_filter = value
+        self._style_disp_buttons()
+        self._render()
+
+    def _style_disp_buttons(self) -> None:
+        for value, btn in self._disp_buttons.items():
+            active = value == self._disp_filter
+            btn.configure(bg=_SM_ACCENT if active else '#e6e8ec',
+                          fg='#ffffff' if active else _SM_TEXT)
+
+    def _render(self) -> None:
+        """Lay out the rows that pass the text + disposition filters, in the
+        current sort order. Rows are persistent widgets re-gridded in place."""
         query = self.filter_var.get().strip().lower()
-        shown = 0
-        for name in self._names:
-            match = query in self._row_search[name] if query else True
-            for widget in self._row_cells[name]:
-                (widget.grid if match else widget.grid_remove)()
-            shown += match
-        self._update_count(shown, len(self._names))
+        df = self._disp_filter
+        rows = [r for r in self._rows
+                if (not query or query in r['search'])
+                and (df == 'all' or r['var'].get() == df)]
+        rows.sort(key=lambda r: self._sort_key(r, self._sort_col), reverse=self._sort_desc)
+
+        for r in self._rows:
+            for widget in r['cells']:
+                widget.grid_remove()
+        for i, r in enumerate(rows):
+            for col, widget in enumerate(r['cells']):
+                widget.grid(row=i + 2, column=col, sticky='w', padx=10, pady=4)
+
+        self._update_count(len(rows), len(self._rows))
+        arrow = ' ▼' if self._sort_desc else ' ▲'
+        for c, lbl in enumerate(self._header_labels):
+            lbl.configure(text=self._COLS[c].upper() + (arrow if c == self._sort_col else ''))
 
     def _update_count(self, shown: int, total: int) -> None:
         self.count_label.configure(
@@ -693,7 +761,7 @@ class _SyncManager:
     def _save(self) -> None:
         cm = self._census_mod
         for name, var in self.proj_vars.items():
-            self.census['projects'][name]['disposition'] = var.get()
+            self.census['projects'][name]['disposition'] = self._LABEL_TO_DISP.get(var.get(), 'pending')
         mapped = 0
         for raw, entry in self.user_entries.items():
             ident = entry.get().strip()

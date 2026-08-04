@@ -328,7 +328,7 @@ def test_sync_manager_gui_save_writes_census_and_heals(tmp_path, monkeypatch):
     cpath = data_dir / 'census.json'
     mgr = gui_mod._SyncManager(root, {'data_dir': str(data_dir)}, cpath, census)
 
-    mgr.proj_vars['NewThing'].set('track')
+    mgr.proj_vars['NewThing'].set('Track')  # UI label; saved as 'track'
     mgr.user_entries['Zach'].insert(0, 'Zach Miller <z@x.com>')
 
     shown = {}
