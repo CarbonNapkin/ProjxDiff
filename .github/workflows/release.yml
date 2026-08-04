@@ -60,6 +60,28 @@ jobs:
       - name: Build
         run: python -m PyInstaller dw_compare.spec --clean --noconfirm
 
+      # Run the actual built binary through a real --sync against a tiny fake
+      # site. Catches packaging breaks (missing hidden imports, bootloader
+      # issues) that unit tests on source can never see.
+      - name: Smoke test binary (Windows)
+        if: matrix.target_name == 'windows'
+        shell: pwsh
+        run: |
+          python scripts/make_smoke_site.py smoke
+          # The exe is windowed, so force PowerShell to wait and take the exit code.
+          $p = Start-Process -FilePath "dist\ProjxDiff.exe" -ArgumentList "--sync","smoke\config.json" -Wait -PassThru -NoNewWindow
+          Get-Content smoke\data\sync.log -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { exit 1 }
+          if (-not (Test-Path "smoke\repo\Smoke")) { Write-Error "project not archived"; exit 1 }
+
+      - name: Smoke test binary (macOS)
+        if: matrix.target_name == 'macos'
+        run: |
+          python scripts/make_smoke_site.py smoke
+          dist/ProjxDiff.app/Contents/MacOS/ProjxDiff --sync smoke/config.json
+          cat smoke/data/sync.log
+          test -d smoke/repo/Smoke
+
       - name: Zip macOS app bundle
         if: matrix.zip_app == true
         run: |

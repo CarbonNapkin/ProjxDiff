@@ -244,6 +244,110 @@ def test_legacy_author_aliases_seed_the_census(tmp_path):
     assert _git_authors(site['repo'])[0][1] == 'Zach Miller <z@x.com>'
 
 
+def test_unmapped_user_with_email_records_raw_but_commits_with_email(tmp_path):
+    site = _site(tmp_path)
+    _write_projx(site['source'] / 'A.driveprojx', {'X': '=1'},
+                 last_saver=('Tushar', 'tushar@x.com'))
+    assert _run(site) == 0
+
+    # The commit carries the email from the file; the metrics record the raw
+    # display name so a later mapping can heal them.
+    assert _git_authors(site['repo'])[0][1] == 'Tushar <tushar@x.com>'
+    with sqlite3.connect(site['data'] / 'metrics.sqlite') as db:
+        owners = {r[0] for r in db.execute('SELECT DISTINCT owner FROM element_changes')}
+    assert owners == {'Tushar'}
+    assert _census(site)['users'] == {'Tushar': None}
+
+
+def test_heal_covers_legacy_owner_format(tmp_path):
+    # Pre-census syncs (v1.1.2) stored unmapped owners as "Raw <>"; healing
+    # must catch those rows too, not just the bare raw name.
+    site = _site(tmp_path)
+    site['data'].mkdir(parents=True, exist_ok=True)
+    conn = sync_mod.open_db(site['data'] / 'metrics.sqlite')
+    conn.execute("INSERT INTO element_changes (run_date, project, owner, category,"
+                 " element, status) VALUES ('2026-08-01', 'P', 'Zach <>', 'variables',"
+                 " 'W', 'modified')")
+    conn.close()
+
+    census = {'schema': 1, 'users': {'Zach': 'Zach Miller <z@x.com>'},
+              'projects': {}, 'conflicts': []}
+    conn = sqlite3.connect(site['data'] / 'metrics.sqlite', isolation_level=None)
+    try:
+        assert census_mod.heal_metrics(conn, census) == 1
+        owner = conn.execute('SELECT owner FROM element_changes').fetchone()[0]
+    finally:
+        conn.close()
+    assert owner == 'Zach Miller <z@x.com>'
+
+
+def test_project_reappearing_after_removal_resumes_cleanly(tmp_path):
+    # Removed from the share (flagged once, archive kept), then it comes back
+    # with changes: the sync diffs against the retained archive state — no
+    # spurious second "removed", no metric explosion, history continuous.
+    site = _site(tmp_path)
+    _write_projx(site['source'] / 'A.driveprojx', {'W': '=1'}, last_saver=('Jane', ''))
+    assert _run(site) == 0
+    (site['source'] / 'A.driveprojx').unlink()
+    assert _run(site) == 0  # removed event recorded
+
+    _write_projx(site['source'] / 'A.driveprojx', {'W': '=2'}, last_saver=('Jane', ''))
+    assert _run(site) == 0
+    with sqlite3.connect(site['data'] / 'metrics.sqlite') as db:
+        removed = db.execute("SELECT COUNT(*) FROM element_changes "
+                             "WHERE status='removed' AND category='project'").fetchone()[0]
+        assert removed == 1
+        cats = db.execute("SELECT category, modified FROM category_changes").fetchall()
+        assert cats == [('variables', 1)]  # a normal diff, not a re-add explosion
+
+
+def test_sync_manager_gui_save_writes_census_and_heals(tmp_path, monkeypatch):
+    # Real Tk widgets driving the real save path; skipped where no display
+    # exists (headless Linux CI) and exercised on the Windows/macOS runners.
+    import pytest
+    tk = pytest.importorskip('tkinter')
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+
+    from dw_compare import gui as gui_mod
+
+    data_dir = tmp_path / 'data'
+    conn = sync_mod.open_db(data_dir / 'metrics.sqlite')
+    conn.execute("INSERT INTO element_changes (run_date, project, owner, category,"
+                 " element, status) VALUES ('2026-08-01', 'NewThing', 'Zach',"
+                 " 'variables', 'W', 'modified')")
+    conn.close()
+
+    census = {'schema': 1, 'users': {'Zach': None},
+              'projects': {'NewThing': {'path': 'NewThing.driveprojx',
+                                        'disposition': 'pending'}},
+              'conflicts': []}
+    cpath = data_dir / 'census.json'
+    mgr = gui_mod._SyncManager(root, {'data_dir': str(data_dir)}, cpath, census)
+
+    mgr.proj_vars['NewThing'].set('track')
+    mgr.user_entries['Zach'].insert(0, 'Zach Miller <z@x.com>')
+
+    shown = {}
+    monkeypatch.setattr(gui_mod.messagebox, 'showinfo',
+                        lambda *a, **k: shown.setdefault('ok', a))
+    try:
+        mgr._save()
+    finally:
+        root.destroy()
+
+    saved = json.loads(cpath.read_text(encoding='utf-8'))
+    assert saved['projects']['NewThing']['disposition'] == 'track'
+    assert saved['users']['Zach'] == 'Zach Miller <z@x.com>'
+    with sqlite3.connect(data_dir / 'metrics.sqlite') as db:
+        assert db.execute('SELECT owner FROM element_changes').fetchone()[0] == \
+            'Zach Miller <z@x.com>'
+    assert 'ok' in shown
+
+
 def test_cli_modes_are_wired(tmp_path, monkeypatch, capsys):
     import sys as _sys
     import dw_compare.__main__ as cli
