@@ -198,3 +198,41 @@ def test_db_panel_explicit_false_beats_saved_server():
         assert not hasattr(app, 'db_frame')
     finally:
         root.destroy()
+
+
+def test_first_launch_seeds_settings_file():
+    # A fresh install must leave an editable file behind: enabling the DB
+    # panel is "flip false to true", not "create a bare dotfile by hand".
+    assert not gui_mod._SETTINGS_PATH.exists()
+    root, app = _make_app()
+    try:
+        assert gui_mod._load_settings() == {'enable_db': False}
+    finally:
+        root.destroy()
+
+
+def test_first_launch_does_not_clobber_existing_settings():
+    gui_mod._save_setting('enable_db', True)
+    gui_mod._save_setting('db_user', 'reader')
+    root, app = _make_app()
+    try:
+        settings = gui_mod._load_settings()
+        assert settings['enable_db'] is True
+        assert settings['db_user'] == 'reader'
+    finally:
+        root.destroy()
+
+
+def test_last_dirs_persist_across_sessions(tmp_path):
+    projx = str(tmp_path / 'Widgets' / 'old.driveprojx')
+    root, app = _make_app()
+    try:
+        app._remember_dir('old', projx)
+    finally:
+        root.destroy()
+    assert gui_mod._load_settings()['last_dirs'] == {'old': str(tmp_path / 'Widgets')}
+    root, app = _make_app()
+    try:
+        assert app._last_dirs == {'old': str(tmp_path / 'Widgets')}
+    finally:
+        root.destroy()

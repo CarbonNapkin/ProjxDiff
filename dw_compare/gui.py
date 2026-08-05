@@ -223,8 +223,14 @@ class CompareApp:
 
         # Last folder used per file-picker field ('old' / 'new' / 'output'),
         # so each Browse… remembers its own location instead of sharing
-        # Tk's single global one. Session-only.
-        self._last_dirs: dict[str, str] = {}
+        # Tk's single global one. Persisted across sessions.
+        self._last_dirs: dict[str, str] = dict(saved.get('last_dirs') or {})
+
+        # Seed the settings file on first launch so there is always a file
+        # to edit: enabling the DB panel means flipping this false to true,
+        # not hand-creating a bare dotfile.
+        if not _SETTINGS_PATH.exists():
+            _save_setting('enable_db', self.db_enabled)
 
         self.show_db.set(self.db_enabled)
 
@@ -638,6 +644,10 @@ class CompareApp:
         full = str(resolve_output_path(raw)) if resolve_output_path else (raw or 'dw_comparison.html')
         self._set_status('Report will be saved to:  ' + full, '#444')
 
+    def _remember_dir(self, key: str, path: str) -> None:
+        self._last_dirs[key] = os.path.dirname(path)
+        _save_setting('last_dirs', self._last_dirs)
+
     def _pick_file(self, target: StringVar, entry_widget=None, key: str = '') -> None:
         path = filedialog.askopenfilename(
             title='Select project file',
@@ -650,7 +660,7 @@ class CompareApp:
             norm = os.path.normpath(path)
             target.set(norm)
             if key:
-                self._last_dirs[key] = os.path.dirname(norm)
+                self._remember_dir(key, norm)
             if entry_widget is not None:
                 entry_widget.xview_moveto(1.0)  # show the filename end, not the start
 
@@ -668,7 +678,7 @@ class CompareApp:
         if path:
             norm = os.path.normpath(path)
             self.output_path.set(norm)
-            self._last_dirs['output'] = os.path.dirname(norm)
+            self._remember_dir('output', norm)
             self.out_entry.xview_moveto(1.0)
 
     def _log(self, msg: str) -> None:

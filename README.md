@@ -159,8 +159,9 @@ database (or `pyodbc` missing) the report simply shows raw GUIDs.
 
 In the GUI this lives in a **Database Options** panel that is off by
 default — most installs have no group database and never need to see it.
-To enable it, add the feature flag to the settings file at
-`~/.projxdiff` (`%USERPROFILE%\.projxdiff` on Windows):
+The app creates its settings file at `~/.projxdiff`
+(`%USERPROFILE%\.projxdiff` on Windows) on first launch; to enable the
+panel, edit that file and flip the flag to true:
 
 ```json
 {"enable_db": true}
