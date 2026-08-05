@@ -612,6 +612,10 @@ class CompareApp:
             activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
             font=('TkDefaultFont', 13, 'bold'), cursor='hand2', pady=4, padx=22,
         )
+        if sys.platform == 'darwin':
+            # macOS draws native aqua buttons and ignores bg — white text on
+            # that light button is unreadable, so keep dark text there.
+            self.compare_btn.configure(fg='#1d2433', activeforeground='#1d2433')
         self.compare_btn.grid(row=0, column=1, sticky='e', padx=(12, 0))
 
         # Filled by a background update check (notify-only; see _check_updates).
