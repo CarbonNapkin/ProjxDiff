@@ -236,3 +236,138 @@ def test_last_dirs_persist_across_sessions(tmp_path):
         assert app._last_dirs == {'old': str(tmp_path / 'Widgets')}
     finally:
         root.destroy()
+
+
+# ---------- hand-edited settings robustness ----------
+
+def test_setting_helpers_treat_wrong_types_as_absent():
+    junk = {'s': ['not', 'a', 'string'], 'l': 'not-a-list', 'n': 7}
+    assert gui_mod._setting_str(junk, 's') == ''
+    assert gui_mod._setting_str(junk, 'n') == ''
+    assert gui_mod._setting_str(junk, 'missing') == ''
+    assert gui_mod._setting_list(junk, 'l') == []
+    assert gui_mod._setting_list(junk, 'missing') == []
+    assert gui_mod._setting_list({'l': ['a']}, 'l') == ['a']
+
+
+def test_hand_edited_junk_settings_do_not_crash_startup():
+    # ~/.projxdiff is the documented hand-edit surface (the enable_db
+    # flag), so valid-JSON-wrong-type values must degrade, never crash.
+    # REGRESSION: "last_dirs" as a string made dict() raise ValueError
+    # and the app died before the window appeared.
+    gui_mod._SETTINGS_PATH.write_text(json.dumps({
+        'enable_db': 'yes',
+        'last_dirs': 'C:/somewhere',
+        'old_db_server': 123,
+        'new_db_server': ['x'],
+        'db_windows_auth': 'banana',
+        'db_user': {'nested': True},
+        'schedule_offered': 'not-a-list',
+        'last_sync_config': ['not', 'a', 'string'],
+    }), encoding='utf-8')
+    root, app = _make_app()
+    try:
+        assert app._last_dirs == {}
+        assert app.old_db_server.get() == ''
+        assert app.db_user.get() == ''
+        assert app.db_windows_auth.get() is True  # truthy junk -> bool()
+        assert app.db_enabled is True             # truthy flag still enables
+    finally:
+        root.destroy()
+
+
+def test_junk_last_dirs_values_are_filtered_not_fatal():
+    gui_mod._save_setting('last_dirs', {'old': '/good/dir', 'new': 42})
+    root, app = _make_app()
+    try:
+        assert app._last_dirs == {'old': '/good/dir'}
+    finally:
+        root.destroy()
+
+
+# ---------- human-facing links point at the download page ----------
+
+def _dialog_texts(root):
+    import tkinter as tk
+    texts = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            try:
+                texts.append(str(child.cget('text')))
+            except tk.TclError:
+                pass
+            walk(child)
+
+    for top in root.winfo_children():
+        if isinstance(top, tk.Toplevel):
+            walk(top)
+    return texts
+
+
+@pytest.mark.parametrize('opener', ['_show_about', '_show_help'])
+def test_dialog_links_go_to_download_page_not_github(opener):
+    # The site is the front door; GitHub is plumbing. A refactor that
+    # points users back at the repo should fail loudly here.
+    from dw_compare.update_check import DOWNLOAD_PAGE
+    root, app = _make_app()
+    try:
+        getattr(app, opener)()
+        texts = _dialog_texts(root)
+        assert any(DOWNLOAD_PAGE in t for t in texts)
+        assert not any('github.com' in t for t in texts)
+    finally:
+        root.destroy()
+
+
+# ---------- compare kickoff: what gets remembered (and what never is) ----------
+
+def test_compare_saves_db_setup_but_never_the_password(tmp_path):
+    # dbsource.py's NO STORED CREDENTIALS rule, enforced at the GUI seam:
+    # the one-time DB setup is remembered, the password must never touch
+    # disk in any form.
+    gui_mod._save_setting('enable_db', True)
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    root, app = _make_app()
+    try:
+        app._run_compare = lambda *a, **k: None  # no real compare
+        app.old_path.set(str(tmp_path / 'a'))
+        app.new_path.set(str(tmp_path / 'b'))
+        app.old_db_server.set('SQLBOX\\DW')
+        app.old_db_database.set('DWGroup')
+        app.db_user.set('reader')
+        app.db_password.set('hunter2')
+        app._on_compare()
+        app._worker.join(timeout=5)
+
+        raw = gui_mod._SETTINGS_PATH.read_text(encoding='utf-8')
+        settings = gui_mod._load_settings()
+        assert settings['old_db_server'] == 'SQLBOX\\DW'
+        assert settings['db_user'] == 'reader'
+        assert 'hunter2' not in raw
+        assert 'password' not in raw.lower()
+    finally:
+        root.destroy()
+
+
+def test_compare_with_flag_off_leaves_saved_db_values_untouched(tmp_path):
+    # Flag off = no panel to read: a compare must not blank out the DB
+    # setup a previously-enabled machine had saved.
+    gui_mod._save_setting('old_db_server', 'KEEP\\ME')
+    gui_mod._save_setting('enable_db', False)
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    root, app = _make_app()
+    try:
+        captured = {}
+        app._run_compare = lambda old, new, output, open_browser, db=None: captured.update(db=db)
+        app.old_path.set(str(tmp_path / 'a'))
+        app.new_path.set(str(tmp_path / 'b'))
+        app._on_compare()
+        app._worker.join(timeout=5)
+
+        assert captured['db'] is None
+        assert gui_mod._load_settings()['old_db_server'] == 'KEEP\\ME'
+    finally:
+        root.destroy()

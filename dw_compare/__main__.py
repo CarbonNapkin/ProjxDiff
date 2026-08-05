@@ -190,8 +190,9 @@ def resolve_db_names(label: str, server: str, database: str, index,
 
 def resolve_side_names(side: str, args, index):
     """CLI wrapper around resolve_db_names: reads the --{side}-db-* argparse
-    fields and the DW_SQL_PASSWORD_{SIDE} env var (never a command-line
-    password — see dbsource.py)."""
+    fields and the password from the environment (never the command line —
+    see dbsource.py): DW_SQL_PASSWORD_{SIDE} wins, DW_SQL_PASSWORD is the
+    shared fallback when both sides use the same login."""
     server = getattr(args, f'{side}_db_server')
     database = getattr(args, f'{side}_db_database')
     if not server or not database:
@@ -199,15 +200,42 @@ def resolve_side_names(side: str, args, index):
 
     sql_auth = getattr(args, f'{side}_db_sql_auth')
     user = getattr(args, f'{side}_db_user')
-    password = os.environ.get(f'DW_SQL_PASSWORD_{side.upper()}', '') if sql_auth else ''
+    password = (os.environ.get(f'DW_SQL_PASSWORD_{side.upper()}')
+                or os.environ.get('DW_SQL_PASSWORD', '')) if sql_auth else ''
     if sql_auth and not password:
-        error = (f"--{side}-db-sql-auth given but DW_SQL_PASSWORD_{side.upper()} "
-                 f"is not set — skipping database name resolution for this side.")
+        error = (f"--{side}-db-sql-auth given but neither "
+                 f"DW_SQL_PASSWORD_{side.upper()} nor DW_SQL_PASSWORD is set "
+                 f"— skipping database name resolution for this side.")
         print(f"  ⚠ [{side}] {error}")
         return {}, {}, {}, error
 
     return resolve_db_names(side, server, database, index,
                             user=user, password=password, sql_auth=sql_auth)
+
+
+def doctor() -> int:
+    """Environment self-check behind the hidden --doctor flag: prints what
+    this running copy can actually do. Exits 1 when a frozen Windows build
+    is missing pyodbc — that can only be a packaging bug (the feature fails
+    soft at runtime, so nothing else would catch it); the release workflow
+    runs this against the built exe."""
+    frozen = bool(getattr(sys, 'frozen', False))
+    print(f'Projx Diff {__version__}')
+    print(f'python   {sys.version.split()[0]} ({"frozen binary" if frozen else "running from source"})')
+    print(f'platform {sys.platform}')
+    try:
+        import pyodbc
+        print(f'pyodbc   {pyodbc.version}')
+        from .dbsource import available_drivers
+        drivers = available_drivers()
+        print('odbc     ' + ('; '.join(drivers) if drivers
+                             else 'no SQL Server ODBC drivers installed'))
+    except ImportError as exc:
+        print(f'pyodbc   MISSING ({exc})')
+        if frozen and sys.platform == 'win32':
+            print('FAIL: a packaged Windows build must bundle pyodbc')
+            return 1
+    return 0
 
 
 def main():
@@ -283,8 +311,14 @@ Examples:
 
     parser.add_argument('-V', '--version', action='version',
                        version=f'Projx Diff {__version__}')
+    # Hidden: environment self-check (used by the release workflow to prove
+    # the frozen exe bundles what it should; handy for support too).
+    parser.add_argument('--doctor', action='store_true', help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    if args.doctor:
+        sys.exit(doctor())
 
     if args.gui:
         from .gui import main as gui_main

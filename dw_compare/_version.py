@@ -5,7 +5,7 @@ __init__.py and any submodule can read these constants without creating
 import cycles.
 """
 
-__version__ = '1.5.3'
+__version__ = '1.5.4'
 __author__ = 'Base 10 Consultants'
 __url__ = 'https://github.com/CarbonNapkin/ProjxDiff'
 __license__ = 'MIT'

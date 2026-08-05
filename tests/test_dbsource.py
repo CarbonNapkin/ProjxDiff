@@ -207,3 +207,62 @@ def test_label_for_prefers_mapping_then_falls_back_to_guid():
 
 def test_report_mentions_raw_guids_when_no_db():
     assert "raw GUID" in NullResolver().report()
+
+
+# ---------- connection-string construction (pure, no pyodbc needed) ----------
+
+def test_build_conn_str_windows_auth(monkeypatch):
+    import dw_compare.dbsource as dbs
+    monkeypatch.setattr(dbs, 'pick_driver', lambda: 'ODBC Driver 17 for SQL Server')
+    db = DwDatabase('old', server='SQLBOX\\DW', database='DWGroup', trusted=True)
+    s = db._build_conn_str()
+    assert 'DRIVER={ODBC Driver 17 for SQL Server}' in s
+    assert 'SERVER=SQLBOX\\DW' in s and 'DATABASE=DWGroup' in s
+    assert 'Trusted_Connection=yes' in s
+    assert 'UID=' not in s and 'PWD=' not in s
+    # LAN default: no encryption demanded, self-signed certs tolerated.
+    assert 'Encrypt=no' in s and 'TrustServerCertificate=yes' in s
+
+
+def test_build_conn_str_sql_auth_carries_credentials(monkeypatch):
+    import dw_compare.dbsource as dbs
+    monkeypatch.setattr(dbs, 'pick_driver', lambda: 'ODBC Driver 18 for SQL Server')
+    db = DwDatabase('new', server='S', database='D', user='reader',
+                    password='hunter2', trusted=False)
+    s = db._build_conn_str()
+    assert 'UID=reader' in s and 'PWD=hunter2' in s
+    assert 'Trusted_Connection' not in s
+
+
+def test_build_conn_str_explicit_string_wins(monkeypatch):
+    import dw_compare.dbsource as dbs
+    monkeypatch.setattr(dbs, 'pick_driver', lambda: None)  # must not matter
+    db = DwDatabase('old', conn_str='DSN=custom;')
+    assert db._build_conn_str() == 'DSN=custom;'
+
+
+def test_build_conn_str_no_driver_raises_actionable(monkeypatch):
+    import dw_compare.dbsource as dbs
+    monkeypatch.setattr(dbs, 'pick_driver', lambda: None)
+    db = DwDatabase('old', server='S', database='D')
+    with pytest.raises(RuntimeError, match='ODBC Driver 17'):
+        db._build_conn_str()
+
+
+# ---------- connect-error classification ----------
+
+@pytest.mark.parametrize('raw, expect', [
+    ('TCP Provider: No such host is known', 'Server not found or not reachable'),
+    ('Login failed for user (28000)', 'Login failed'),
+    ('Cannot open database "Nope" requested by the login', "database name wasn't found"),
+    ('IM002 Data source name not found', 'No SQL Server ODBC driver'),
+    ('SSL Provider: certificate verify failed', 'TLS/certificate error'),
+])
+def test_classify_connect_error_actionable_lines(raw, expect):
+    from dw_compare.dbsource import _classify_connect_error
+    assert expect in _classify_connect_error(Exception(raw))
+
+
+def test_classify_connect_error_unknown_passes_through():
+    from dw_compare.dbsource import _classify_connect_error
+    assert _classify_connect_error(Exception('weird failure XYZ')) == 'weird failure XYZ'

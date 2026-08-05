@@ -4,6 +4,27 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.4] - 2026-08-05
+
+### Fixed
+
+- **A hand-edited settings file can no longer stop the app from
+  launching.** A wrong-typed value in `~/.projxdiff` (say, `last_dirs`
+  as a string instead of an object) crashed the app before the window
+  appeared; every value is now read tolerantly and junk is treated as
+  absent.
+- **The shared `DW_SQL_PASSWORD` environment variable now works from
+  the CLI**, as the README always said: `DW_SQL_PASSWORD_OLD`/`_NEW`
+  win when set, and the shared variable fills in when both sides use
+  the same login. Previously only the per-side variables were read.
+
+### Added
+
+- **`--doctor` self-check** (hidden flag): prints version, platform,
+  and database-connectivity readiness (pyodbc + ODBC drivers). Release
+  builds now run it in CI, so a Windows build missing pyodbc can never
+  ship again (the 1.5.1 bug class).
+
 ## [1.5.3] - 2026-08-05
 
 ### Changed

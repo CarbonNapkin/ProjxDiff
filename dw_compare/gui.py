@@ -99,6 +99,19 @@ def _load_settings() -> dict:
         return {}
 
 
+def _setting_str(settings: dict, key: str) -> str:
+    """Read a string setting, treating a wrong-typed value as absent.
+    ~/.projxdiff is hand-edited (that's how the enable_db flag is turned
+    on), so a typo like a list or number must never crash the app."""
+    value = settings.get(key, '')
+    return value if isinstance(value, str) else ''
+
+
+def _setting_list(settings: dict, key: str) -> list:
+    value = settings.get(key)
+    return value if isinstance(value, list) else []
+
+
 def _save_setting(key: str, value) -> None:
     settings = _load_settings()
     settings[key] = value
@@ -211,20 +224,23 @@ class CompareApp:
         self.db_enabled = bool(saved.get(
             'enable_db',
             saved.get('old_db_server') or saved.get('new_db_server')))
-        self.old_db_server = StringVar(value=saved.get('old_db_server', ''))
-        self.new_db_server = StringVar(value=saved.get('new_db_server', ''))
-        self.old_db_database = StringVar(value=saved.get('old_db_database', ''))
-        self.new_db_database = StringVar(value=saved.get('new_db_database', ''))
+        self.old_db_server = StringVar(value=_setting_str(saved, 'old_db_server'))
+        self.new_db_server = StringVar(value=_setting_str(saved, 'new_db_server'))
+        self.old_db_database = StringVar(value=_setting_str(saved, 'old_db_database'))
+        self.new_db_database = StringVar(value=_setting_str(saved, 'new_db_database'))
         # SQL Server auth is the default (the common case for a group DB);
         # the checkbox switches to Windows integrated auth.
-        self.db_windows_auth = BooleanVar(value=saved.get('db_windows_auth', False))
-        self.db_user = StringVar(value=saved.get('db_user', ''))
+        self.db_windows_auth = BooleanVar(value=bool(saved.get('db_windows_auth', False)))
+        self.db_user = StringVar(value=_setting_str(saved, 'db_user'))
         self.db_password = StringVar()
 
         # Last folder used per file-picker field ('old' / 'new' / 'output'),
         # so each Browse… remembers its own location instead of sharing
         # Tk's single global one. Persisted across sessions.
-        self._last_dirs: dict[str, str] = dict(saved.get('last_dirs') or {})
+        raw_dirs = saved.get('last_dirs')
+        self._last_dirs: dict[str, str] = (
+            {str(k): v for k, v in raw_dirs.items() if isinstance(v, str)}
+            if isinstance(raw_dirs, dict) else {})
 
         # Seed the settings file on first launch so there is always a file
         # to edit: enabling the DB panel means flipping this false to true,
@@ -335,7 +351,7 @@ class CompareApp:
         manager on their remembered config; everyone else gets a chooser:
         open an existing config or create a new site (one folder question,
         no JSON authored by humans)."""
-        last = _load_settings().get('last_sync_config', '')
+        last = _setting_str(_load_settings(), 'last_sync_config')
         if last and Path(last).is_file() and self._open_sync_manager(Path(last), quiet=True):
             return
         self._sync_chooser()
@@ -1453,10 +1469,10 @@ class _SyncManager:
         config — Windows only; elsewhere the nightly run is cron territory."""
         if sys.platform != 'win32' or self.config_path is None:
             return False
-        return str(self.config_path) not in _load_settings().get('schedule_offered', [])
+        return str(self.config_path) not in _setting_list(_load_settings(), 'schedule_offered')
 
     def _offer_schedule(self) -> None:
-        offered = _load_settings().get('schedule_offered', [])
+        offered = _setting_list(_load_settings(), 'schedule_offered')
         _save_setting('schedule_offered', offered + [str(self.config_path)])
 
         top, body = _styled_dialog(self.top, 'Run Nightly',

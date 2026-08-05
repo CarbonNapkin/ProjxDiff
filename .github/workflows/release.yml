@@ -86,6 +86,11 @@ jobs:
           Get-Content smoke\data\sync.log -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { exit 1 }
           if (-not (Test-Path "smoke\repo\Smoke")) { Write-Error "project not archived"; exit 1 }
+          # --doctor exits nonzero if the frozen exe is missing pyodbc — the
+          # runtime fails soft (raw GUIDs), so only this catches the 1.5.1
+          # class of packaging bug before it ships.
+          $d = Start-Process -FilePath "dist\ProjxDiff.exe" -ArgumentList "--doctor" -Wait -PassThru -NoNewWindow
+          if ($d.ExitCode -ne 0) { Write-Error "doctor check failed (pyodbc not bundled?)"; exit 1 }
 
       - name: Smoke test binary (macOS)
         if: matrix.target_name == 'macos'

@@ -205,3 +205,142 @@ def test_cleanup_temp_dirs_drains_the_list(tmp_path, monkeypatch):  # REGRESSION
 
     assert not d.exists()        # the extraction is removed
     assert cli._temp_dirs == []  # and the list is drained, not left to grow across runs
+
+
+# ---------- --doctor self-check ----------
+
+def test_doctor_reports_and_passes_from_source(capsys):
+    assert cli.doctor() == 0
+    out = capsys.readouterr().out
+    assert f'Projx Diff {cli.__version__}' in out
+    assert 'pyodbc' in out
+
+
+def test_doctor_fails_when_frozen_windows_build_lacks_pyodbc(capsys, monkeypatch):
+    # The 1.5.1 regression class: a packaged Windows exe without pyodbc
+    # fails soft at runtime (raw GUIDs), so --doctor is the only loud
+    # signal — it must exit nonzero for the release workflow to catch.
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setitem(sys.modules, 'pyodbc', None)  # import raises
+    assert cli.doctor() == 1
+    assert 'FAIL' in capsys.readouterr().out
+
+
+def test_doctor_tolerates_missing_pyodbc_elsewhere(capsys, monkeypatch):
+    # From source (any OS) pyodbc is an optional extra — never a failure.
+    monkeypatch.setitem(sys.modules, 'pyodbc', None)
+    assert cli.doctor() == 0
+    assert 'MISSING' in capsys.readouterr().out
+
+
+def test_doctor_flag_dispatches(monkeypatch):
+    monkeypatch.setattr(sys, 'argv', ['dw_compare', '--doctor'])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+
+
+# ---------- project auto-detect ----------
+
+def test_find_project_folders_prefers_old_new_names(tmp_path, monkeypatch):
+    for name in ('MyProj old', 'MyProj new', 'unrelated'):
+        (tmp_path / name).mkdir()
+    monkeypatch.chdir(tmp_path)
+    old, new = cli.find_project_folders()
+    assert old.name == 'MyProj old' and new.name == 'MyProj new'
+
+
+def test_find_project_folders_matches_projx_files_by_pattern(tmp_path, monkeypatch):
+    (tmp_path / 'Widget_v1.driveprojx').touch()
+    (tmp_path / 'Widget_v2.driveprojx').touch()
+    (tmp_path / 'notes.txt').touch()
+    monkeypatch.chdir(tmp_path)
+    old, new = cli.find_project_folders()
+    assert (old.name, new.name) == ('Widget_v1.driveprojx', 'Widget_v2.driveprojx')
+
+
+def test_find_project_folders_exactly_two_folders_wins_by_sort(tmp_path, monkeypatch):
+    (tmp_path / 'Bravo').mkdir()
+    (tmp_path / 'Alpha').mkdir()
+    monkeypatch.chdir(tmp_path)
+    old, new = cli.find_project_folders()
+    assert (old.name, new.name) == ('Alpha', 'Bravo')
+
+
+def test_find_project_folders_none_when_ambiguous(tmp_path, monkeypatch):
+    for name in ('A', 'B', 'C'):
+        (tmp_path / name).mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert cli.find_project_folders() is None
+
+
+def test_find_project_folders_ignores_hidden_and_build_dirs(tmp_path, monkeypatch):
+    (tmp_path / '.git').mkdir()
+    (tmp_path / 'old_proj').mkdir()
+    (tmp_path / 'new_proj').mkdir()
+    monkeypatch.chdir(tmp_path)
+    old, new = cli.find_project_folders()
+    assert (old.name, new.name) == ('old_proj', 'new_proj')
+
+
+# ---------- CLI database wiring: env-var password rules ----------
+
+def _db_args(**over):
+    from types import SimpleNamespace
+    base = dict(old_db_server='S', old_db_database='D',
+                old_db_user='u', old_db_sql_auth=False)
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def _capture_resolve(monkeypatch):
+    seen = {}
+
+    def fake(label, server, database, index, user='', password='', sql_auth=False):
+        seen.update(label=label, password=password, sql_auth=sql_auth)
+        return {}, {}, {}, None
+
+    monkeypatch.setattr(cli, 'resolve_db_names', fake)
+    return seen
+
+
+def test_side_password_env_var_wins(monkeypatch):
+    seen = _capture_resolve(monkeypatch)
+    monkeypatch.setenv('DW_SQL_PASSWORD_OLD', 'side-secret')
+    monkeypatch.setenv('DW_SQL_PASSWORD', 'shared-secret')
+    cli.resolve_side_names('old', _db_args(old_db_sql_auth=True), index=None)
+    assert seen['password'] == 'side-secret'
+
+
+def test_shared_password_env_var_is_the_fallback(monkeypatch):
+    # README documents DW_SQL_PASSWORD as the single-password path;
+    # REGRESSION: the code only read the _OLD/_NEW forms.
+    seen = _capture_resolve(monkeypatch)
+    monkeypatch.delenv('DW_SQL_PASSWORD_OLD', raising=False)
+    monkeypatch.setenv('DW_SQL_PASSWORD', 'shared-secret')
+    cli.resolve_side_names('old', _db_args(old_db_sql_auth=True), index=None)
+    assert seen['password'] == 'shared-secret'
+
+
+def test_sql_auth_with_no_password_env_skips_with_error(monkeypatch, capsys):
+    _capture_resolve(monkeypatch)
+    monkeypatch.delenv('DW_SQL_PASSWORD_OLD', raising=False)
+    monkeypatch.delenv('DW_SQL_PASSWORD', raising=False)
+    resolved, props, types_, error = cli.resolve_side_names(
+        'old', _db_args(old_db_sql_auth=True), index=None)
+    assert resolved == {} and error and 'DW_SQL_PASSWORD' in error
+
+
+def test_windows_auth_never_reads_password_env(monkeypatch):
+    seen = _capture_resolve(monkeypatch)
+    monkeypatch.setenv('DW_SQL_PASSWORD', 'should-not-be-used')
+    cli.resolve_side_names('old', _db_args(old_db_sql_auth=False), index=None)
+    assert seen['password'] == ''
+
+
+def test_unconfigured_side_is_silent_no_op(monkeypatch):
+    seen = _capture_resolve(monkeypatch)
+    result = cli.resolve_side_names('old', _db_args(old_db_server=''), index=None)
+    assert result == ({}, {}, {}, None)
+    assert seen == {}  # resolve_db_names never called
