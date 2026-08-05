@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import Tk, StringVar, BooleanVar, END, DISABLED, NORMAL, filedialog, messagebox
+from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
 from ._version import __version__, __author__, __license__
@@ -55,6 +56,15 @@ _SM_DIVIDER = '#e3e6eb'
 _SM_ACCENT = '#2d6cdf'
 _SM_ACCENT_ACT = '#245bc0'
 
+# Main-window pane palette. Old/new accents match the report's
+# colorblind-safe orange/blue so the whole product reads as one system.
+_PANEL_BG = '#eef1f5'
+_OLD_ACCENT = '#c96a1b'
+_NEW_ACCENT = '#2f6fb3'
+_OK_FG = '#1e7e34'
+_ERR_FG = '#c0392b'
+_WARN_FG = '#b7791f'
+
 
 def _default_config_dir() -> str:
     """Sensible starting folder for the sync-config file picker: the standard
@@ -85,6 +95,71 @@ def _set_window_icon(win) -> None:
             win._icon_ref = img        # keep a reference so Tk doesn't GC it
     except Exception:
         pass
+
+
+def _ellipsize_middle(text: str, font, px: int) -> str:
+    """Shorten text to fit px pixels keeping the start and end visible
+    (C:\\Share\\…\\Project.driveprojx) — the root and the filename are the
+    parts people recognize; the middle folders matter least."""
+    if px <= 0 or not text or font.measure(text) <= px:
+        return text
+
+    def cut(keep: int) -> str:
+        head = max(2, int(keep * 0.45))
+        tail = max(2, keep - head)
+        return text[:head] + '…' + text[len(text) - tail:]
+
+    lo, hi = 0, len(text)
+    best = cut(0)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        cand = cut(mid)
+        if font.measure(cand) <= px:
+            best, lo = cand, mid
+        else:
+            hi = mid - 1
+    return best
+
+
+class _Tooltip:
+    """Minimal hover tooltip (plain Tk has none). Shows getter()'s text
+    under the widget after a short delay; hides on leave/click."""
+
+    def __init__(self, widget, getter):
+        self.widget, self.getter = widget, getter
+        self._tip = None
+        self._after = None
+        widget.bind('<Enter>', self._schedule, add='+')
+        widget.bind('<Leave>', self._hide, add='+')
+        widget.bind('<ButtonPress>', self._hide, add='+')
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self._after = self.widget.after(500, self._show)
+
+    def _cancel(self):
+        if self._after:
+            self.widget.after_cancel(self._after)
+            self._after = None
+
+    def _show(self):
+        text = self.getter()
+        if not text or self._tip:
+            return
+        x = self.widget.winfo_rootx() + 8
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f'+{x}+{y}')
+        tk.Label(tip, text=text, bg='#fffbe6', fg='#333', relief='solid', bd=1,
+                 padx=6, pady=3, justify='left').pack()
+        self._tip = tip
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
 
 
 # Tiny per-user settings file (remembers e.g. the last-used sync config so
@@ -192,8 +267,8 @@ class CompareApp:
         root.title(APP_TITLE)
         _set_window_icon(root)
         # Compact by default; the log pane is hidden (View ▸ Show Log) and the
-        # window grows to fit it when shown.
-        root.geometry('760x392')   # _sync_window_size grows this per panel
+        # window grows to fit it when shown (_sync_window_size).
+        root.geometry('880x480')
         self.show_log = BooleanVar(value=False)
         self.show_db = BooleanVar(value=False)   # set after settings load
         self._busy = False
@@ -479,81 +554,76 @@ class CompareApp:
                  bg=_SM_HEADER_BG, fg=_SM_HEADER_SUB,
                  font=('TkDefaultFont', 9)).pack(anchor='w', padx=16, pady=(1, 10))
 
-        pad = {'padx': 8, 'pady': 6}
         bg = _SM_BG
 
         frm = tk.Frame(self.root, bg=bg, padx=14, pady=12)
         frm.pack(fill='both', expand=True)
-
-        def label(text, **kw):
-            return tk.Label(frm, text=text, bg=bg, fg=_SM_TEXT, anchor='w', **kw)
-
-        def entry(var):
-            return tk.Entry(frm, textvariable=var, highlightthickness=1,
-                            highlightcolor=_SM_ACCENT, relief='solid', bd=1)
-
-        def button(text, cmd):
-            return tk.Button(frm, text=text, command=cmd, highlightthickness=0,
-                             relief='flat', bg='#e6e8ec', activebackground='#dcdfe4',
-                             cursor='hand2', padx=10, pady=3)
-
         self._frm = frm
-        self.old_entry = entry(self.old_path)
-        self.new_entry = entry(self.new_path)
-        self.out_entry = entry(self.output_path)
+        self._path_entries = {}
+        frm.columnconfigure(0, weight=1)
 
-        label('Old project:').grid(row=0, column=0, sticky='w', **pad)
-        self.old_entry.grid(row=0, column=1, sticky='ew', **pad)
-        button('Browse…', lambda: self._pick_file(self.old_path, self.old_entry, 'old')).grid(row=0, column=2, columnspan=2, sticky='ew', **pad)
+        def button(parent, text, cmd):
+            return tk.Button(parent, text=text, command=cmd, highlightthickness=0,
+                             relief='flat', bg='#e6e8ec', activebackground='#dcdfe4',
+                             cursor='hand2', padx=10, pady=2)
+        self._button = button
 
-        label('New project:').grid(row=1, column=0, sticky='w', **pad)
-        self.new_entry.grid(row=1, column=1, sticky='ew', **pad)
-        button('Browse…', lambda: self._pick_file(self.new_path, self.new_entry, 'new')).grid(row=1, column=2, columnspan=2, sticky='ew', **pad)
+        # Old-left / new-right panes: everything about a side — its project,
+        # its group database, and (when different) its login — lives together
+        # on that side.
+        panes = tk.Frame(frm, bg=bg)
+        panes.grid(row=0, column=0, sticky='nsew')
+        panes.columnconfigure(0, weight=1, uniform='pane')
+        panes.columnconfigure(1, weight=1, uniform='pane')
+        self._build_side_pane(panes, 'old', 0)
+        self._build_side_pane(panes, 'new', 1)
 
-        label('Output HTML:').grid(row=2, column=0, sticky='w', **pad)
-        self.out_entry.grid(row=2, column=1, sticky='ew', **pad)
-        button('Save as…', self._pick_output).grid(row=2, column=2, columnspan=2, sticky='ew', **pad)
-
-        tk.Checkbutton(
-            frm, text='Open report in browser when done',
-            variable=self.open_in_browser, bg=bg, fg=_SM_TEXT, anchor='w',
-            highlightthickness=0, activebackground=bg, selectcolor='#ffffff',
-        ).grid(row=3, column=1, sticky='w', **pad)
-
-        self.compare_btn = tk.Button(
-            frm, text='Compare', command=self._on_compare,
-            highlightthickness=0, relief='flat', bg=_SM_ACCENT, fg='#ffffff',
-            activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
-            font=('TkDefaultFont', 13, 'bold'), cursor='hand2', pady=4,
-        )
-        self.compare_btn.grid(row=3, column=2, columnspan=2, sticky='ew', **pad)
-
-        # Database Options panel — optional per-side group-DB connection for
-        # resolving model/rule names. Feature-flagged: only built when
-        # enable_db is on (see __init__); SQL auth fields hide when Windows
-        # auth is selected.
-        self._db_row = 4
+        # Shared SQL login below both panes (one login covers both sides —
+        # the common case). Feature-flagged with the rest of the DB surface.
         if self.db_enabled:
-            self._build_db_panel(frm)
+            self._build_login_bar(frm)
 
+        out = tk.Frame(frm, bg=bg)
+        out.grid(row=2, column=0, sticky='ew', pady=(10, 0))
+        out.columnconfigure(1, weight=1)
+        tk.Label(out, text='Save report as:', bg=bg, fg=_SM_TEXT).grid(row=0, column=0, padx=(0, 8))
+        self.out_entry = tk.Entry(out, highlightthickness=1, highlightcolor=_SM_ACCENT,
+                                  relief='solid', bd=1)
+        self.out_entry.grid(row=0, column=1, sticky='ew')
+        self._bind_path_display(self.out_entry, self.output_path)
+        button(out, 'Save as…', self._pick_output).grid(row=0, column=2, padx=(6, 0))
+        tk.Checkbutton(out, text='Open in browser', variable=self.open_in_browser,
+                       bg=bg, fg=_SM_TEXT, anchor='w', highlightthickness=0,
+                       activebackground=bg, selectcolor='#ffffff').grid(row=0, column=3, padx=(8, 0))
+
+        act = tk.Frame(frm, bg=bg)
+        act.grid(row=3, column=0, sticky='ew', pady=(8, 0))
+        act.columnconfigure(0, weight=1)
         # Status line — wraps so the full output path is always visible, and
         # carries run progress/results now that the log is hidden by default.
-        self.status_label = tk.Label(frm, text='', bg=bg, anchor='w', justify='left',
-                                     wraplength=660)
-        self.status_label.grid(row=5, column=0, columnspan=4, sticky='w', padx=8, pady=(2, 2))
+        self.status_label = tk.Label(act, text='', bg=bg, anchor='w',
+                                     justify='left', wraplength=640)
+        self.status_label.grid(row=0, column=0, sticky='w')
+        act.bind('<Configure>', lambda e: self.status_label.configure(
+            wraplength=max(300, e.width - 170)), add='+')
+        self.compare_btn = tk.Button(
+            act, text='Compare', command=self._on_compare,
+            highlightthickness=0, relief='flat', bg=_SM_ACCENT, fg='#ffffff',
+            activebackground=_SM_ACCENT_ACT, activeforeground='#ffffff',
+            font=('TkDefaultFont', 13, 'bold'), cursor='hand2', pady=4, padx=22,
+        )
+        self.compare_btn.grid(row=0, column=1, sticky='e', padx=(12, 0))
 
         # Filled by a background update check (notify-only; see _check_updates).
         self.update_label = tk.Label(frm, text='', bg=bg, fg='#3f51b5', anchor='w', cursor='hand2')
-        self.update_label.grid(row=6, column=0, columnspan=4, sticky='w', padx=8, pady=(0, 6))
+        self.update_label.grid(row=4, column=0, sticky='w', pady=(4, 0))
 
         # Log pane — hidden by default; toggled via View ▸ Show Log.
-        self._log_row = 7
-        self.log_label = label('Log:')
-        self.log_label.grid(row=self._log_row, column=0, sticky='nw', **pad)
-        self.log_box = ScrolledText(frm, height=14, wrap='word', state=DISABLED, bd=1, relief='solid')
-        self.log_box.grid(row=self._log_row, column=1, columnspan=3, sticky='nsew', **pad)
-
-        frm.columnconfigure(1, weight=1)
+        self.log_label = tk.Label(frm, text='Log:', bg=bg, fg=_SM_TEXT, anchor='w')
+        self.log_label.grid(row=5, column=0, sticky='nw', pady=(6, 0))
+        self._log_row = 6
+        self.log_box = ScrolledText(frm, height=12, wrap='word', state=DISABLED, bd=1, relief='solid')
+        self.log_box.grid(row=self._log_row, column=0, sticky='nsew')
 
         # Apply the initial panel states and seed the status line with the
         # full destination; keep the status in sync when the output path changes.
@@ -563,95 +633,244 @@ class CompareApp:
         self.output_path.trace_add('write', lambda *a: self._update_status_idle())
         self._update_status_idle()
 
-    def _build_db_panel(self, frm) -> None:
-        db_frame = tk.Frame(frm, bg='#eef1f5', highlightthickness=1,
-                            highlightbackground=_SM_DIVIDER)
-        self.db_frame = db_frame
-        db_frame.grid(row=self._db_row, column=0, columnspan=4, sticky='ew',
-                      padx=8, pady=(2, 6))
+    def _build_side_pane(self, parent, side: str, col: int) -> None:
+        """One side's pane: accent bar, project picker, and (when the flag
+        is on) that side's database section with its Test connection row."""
+        accent = _OLD_ACCENT if side == 'old' else _NEW_ACCENT
+        pane = tk.Frame(parent, bg=_PANEL_BG, highlightthickness=1,
+                        highlightbackground=_SM_DIVIDER)
+        pane.grid(row=0, column=col, sticky='nsew',
+                  padx=(0, 6) if col == 0 else (6, 0))
+        tk.Frame(pane, bg=accent, height=3).pack(fill='x')
+        body = tk.Frame(pane, bg=_PANEL_BG, padx=12, pady=10)
+        body.pack(fill='both', expand=True)
+        body.columnconfigure(0, weight=1, uniform='half')
+        body.columnconfigure(1, weight=1, uniform='half')
+        setattr(self, f'{side}_pane', pane)
 
-        def db_label(text, **kw):
-            kw.setdefault('fg', _SM_TEXT)
-            return tk.Label(db_frame, text=text, bg='#eef1f5', anchor='w', **kw)
+        tk.Label(body, text=f'{side.upper()} PROJECT', bg=_PANEL_BG, fg=accent,
+                 font=('TkDefaultFont', 9, 'bold')).grid(row=0, column=0, columnspan=2, sticky='w')
+        tk.Label(body, text='Project file or folder:', bg=_PANEL_BG, fg=_SM_TEXT).grid(
+            row=1, column=0, columnspan=2, sticky='w', pady=(8, 2))
+        pick = tk.Frame(body, bg=_PANEL_BG)
+        pick.grid(row=2, column=0, columnspan=2, sticky='ew')
+        pick.columnconfigure(0, weight=1)
+        var = self.old_path if side == 'old' else self.new_path
+        ent = tk.Entry(pick, highlightthickness=1, highlightcolor=_SM_ACCENT,
+                       relief='solid', bd=1)
+        ent.grid(row=0, column=0, sticky='ew')
+        self._button(pick, 'Browse…',
+                     lambda: self._pick_file(var, ent, side)).grid(row=0, column=1, padx=(6, 0))
+        self._bind_path_display(ent, var)
+        setattr(self, f'{side}_entry', ent)
 
-        def db_entry(var, show=None):
-            return tk.Entry(db_frame, textvariable=var, highlightthickness=1,
-                            highlightcolor=_SM_ACCENT, relief='solid', bd=1,
-                            show=show)
+        if not self.db_enabled:
+            return
 
-        db_label('DATABASE (OPTIONAL — RESOLVES MODEL/RULE NAMES)', fg=_SM_MUTED,
-                 font=('TkDefaultFont', 8, 'bold')).grid(
-            row=0, column=0, columnspan=4, sticky='w', padx=10, pady=(8, 2))
+        sec = tk.Frame(body, bg=_PANEL_BG)
+        sec.grid(row=3, column=0, columnspan=2, sticky='ew')
+        sec.columnconfigure(0, weight=1, uniform='half')
+        sec.columnconfigure(1, weight=1, uniform='half')
+        setattr(self, f'{side}_db_section', sec)
 
-        db_label('Old DB server:').grid(row=1, column=0, sticky='w', padx=10, pady=3)
-        db_entry(self.old_db_server).grid(row=1, column=1, sticky='ew', padx=(0, 10), pady=3)
-        db_label('Old DB name:').grid(row=1, column=2, sticky='w', padx=10, pady=3)
-        db_entry(self.old_db_database).grid(row=1, column=3, sticky='ew', padx=(0, 10), pady=3)
+        def sec_label(text):
+            return tk.Label(sec, text=text, bg=_PANEL_BG, fg=_SM_TEXT, anchor='w')
 
-        db_label('New DB server:').grid(row=2, column=0, sticky='w', padx=10, pady=3)
-        db_entry(self.new_db_server).grid(row=2, column=1, sticky='ew', padx=(0, 10), pady=3)
-        db_label('New DB name:').grid(row=2, column=2, sticky='w', padx=10, pady=3)
-        db_entry(self.new_db_database).grid(row=2, column=3, sticky='ew', padx=(0, 10), pady=3)
+        def sec_entry(v, show=None):
+            return tk.Entry(sec, textvariable=v, highlightthickness=1,
+                            highlightcolor=_SM_ACCENT, relief='solid', bd=1, show=show)
 
-        tk.Checkbutton(
-            db_frame, text='Use Windows Authentication (instead of SQL Server login)',
-            variable=self.db_windows_auth, bg='#eef1f5', fg=_SM_TEXT,
-            activebackground='#eef1f5', selectcolor='#ffffff', anchor='w',
-            highlightthickness=0, cursor='hand2',
-            command=self._apply_windows_auth_visibility,
-        ).grid(row=3, column=0, columnspan=4, sticky='w', padx=10, pady=(2, 0))
+        tk.Label(sec, text='DATABASE (OPTIONAL — RESOLVES MODEL/RULE NAMES)',
+                 bg=_PANEL_BG, fg=_SM_MUTED, font=('TkDefaultFont', 8, 'bold')).grid(
+            row=0, column=0, columnspan=2, sticky='w', pady=(12, 2))
+        server_var = self.old_db_server if side == 'old' else self.new_db_server
+        dbname_var = self.old_db_database if side == 'old' else self.new_db_database
+        sec_label('Server:').grid(row=1, column=0, sticky='w', pady=(2, 1))
+        sec_label('Database:').grid(row=1, column=1, sticky='w', padx=(8, 0), pady=(2, 1))
+        sec_entry(server_var).grid(row=2, column=0, sticky='ew', padx=(0, 4))
+        sec_entry(dbname_var).grid(row=2, column=1, sticky='ew', padx=(4, 0))
 
-        self.db_user_label = db_label('SQL username:')
-        self.db_user_entry = db_entry(self.db_user)
-        self.db_pass_label = db_label('SQL password:')
-        self.db_pass_entry = db_entry(self.db_password, show='*')
-        self.db_user_label.grid(row=4, column=0, sticky='w', padx=10, pady=(2, 2))
-        self.db_user_entry.grid(row=4, column=1, sticky='ew', padx=(0, 10), pady=(2, 2))
-        self.db_pass_label.grid(row=4, column=2, sticky='w', padx=10, pady=(2, 2))
-        self.db_pass_entry.grid(row=4, column=3, sticky='ew', padx=(0, 10), pady=(2, 2))
+        if side == 'old':
+            # Old-side login pair — revealed only while "Different login for
+            # the old database" is on (see _apply_windows_auth_visibility).
+            self.old_db_user_label = sec_label('Old DB username:')
+            self.old_db_pass_label = sec_label('Old DB password:')
+            self.old_db_user_entry = sec_entry(self.old_db_user)
+            self.old_db_pass_entry = sec_entry(self.old_db_password, show='*')
+            self.old_db_user_label.grid(row=3, column=0, sticky='w', pady=(6, 1))
+            self.old_db_pass_label.grid(row=3, column=1, sticky='w', padx=(8, 0), pady=(6, 1))
+            self.old_db_user_entry.grid(row=4, column=0, sticky='ew', padx=(0, 4))
+            self.old_db_pass_entry.grid(row=4, column=1, sticky='ew', padx=(4, 0))
 
-        self.db_diff_creds_check = tk.Checkbutton(
-            db_frame, text='Different login for the old database',
-            variable=self.db_diff_creds, bg='#eef1f5', fg=_SM_TEXT,
-            activebackground='#eef1f5', selectcolor='#ffffff', anchor='w',
-            highlightthickness=0, cursor='hand2',
-            command=self._apply_windows_auth_visibility,
-        )
-        self.db_diff_creds_check.grid(row=5, column=0, columnspan=4, sticky='w',
-                                      padx=10, pady=(0, 2))
+        test_row = tk.Frame(sec, bg=_PANEL_BG)
+        test_row.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(8, 0))
+        test_row.columnconfigure(1, weight=1)
+        btn = self._button(test_row, 'Test connection',
+                           lambda: self._test_db_connection(side))
+        btn.grid(row=0, column=0, sticky='nw')
+        status = tk.Label(test_row, text='', bg=_PANEL_BG, fg=_SM_MUTED,
+                          anchor='w', justify='left', wraplength=240)
+        status.grid(row=0, column=1, sticky='w', padx=(8, 0))
+        test_row.bind('<Configure>', lambda e, s=status, b=btn: s.configure(
+            wraplength=max(120, e.width - b.winfo_width() - 24)), add='+')
+        setattr(self, f'{side}_test_btn', btn)
+        setattr(self, f'{side}_test_status', status)
 
-        self.old_db_user_label = db_label('Old DB username:')
-        self.old_db_user_entry = db_entry(self.old_db_user)
-        self.old_db_pass_label = db_label('Old DB password:')
-        self.old_db_pass_entry = db_entry(self.old_db_password, show='*')
-        self.old_db_user_label.grid(row=6, column=0, sticky='w', padx=10, pady=(2, 8))
-        self.old_db_user_entry.grid(row=6, column=1, sticky='ew', padx=(0, 10), pady=(2, 8))
-        self.old_db_pass_label.grid(row=6, column=2, sticky='w', padx=10, pady=(2, 8))
-        self.old_db_pass_entry.grid(row=6, column=3, sticky='ew', padx=(0, 10), pady=(2, 8))
+    def _build_login_bar(self, frm) -> None:
+        """Shared SQL login below the panes; View ▸ Show Database Options
+        toggles this bar together with both panes' database sections."""
+        bar = tk.Frame(frm, bg=_PANEL_BG, highlightthickness=1,
+                       highlightbackground=_SM_DIVIDER)
+        self.db_frame = bar
+        bar.grid(row=1, column=0, sticky='ew', pady=(8, 0))
+        inner = tk.Frame(bar, bg=_PANEL_BG, padx=12, pady=8)
+        inner.pack(fill='x')
+        inner.columnconfigure(0, weight=1, uniform='half')
+        inner.columnconfigure(1, weight=1, uniform='half')
 
-        db_frame.columnconfigure(1, weight=1)
-        db_frame.columnconfigure(3, weight=1)
+        tk.Label(inner, text='SQL SERVER LOGIN', bg=_PANEL_BG, fg=_SM_MUTED,
+                 font=('TkDefaultFont', 8, 'bold')).grid(row=0, column=0, columnspan=2, sticky='w')
+
+        def check(text, var):
+            return tk.Checkbutton(inner, text=text, variable=var,
+                                  command=self._apply_windows_auth_visibility,
+                                  bg=_PANEL_BG, fg=_SM_TEXT, anchor='w',
+                                  activebackground=_PANEL_BG, selectcolor='#ffffff',
+                                  highlightthickness=0, cursor='hand2')
+        check('Use Windows Authentication (instead of SQL Server login)',
+              self.db_windows_auth).grid(row=1, column=0, sticky='w', pady=(2, 0))
+        self.db_diff_creds_check = check('Different login for the old database',
+                                         self.db_diff_creds)
+        self.db_diff_creds_check.grid(row=1, column=1, sticky='w', padx=(8, 0), pady=(2, 0))
+
+        def bar_entry(v, show=None):
+            return tk.Entry(inner, textvariable=v, highlightthickness=1,
+                            highlightcolor=_SM_ACCENT, relief='solid', bd=1, show=show)
+        self.db_user_label = tk.Label(inner, text='SQL username:', bg=_PANEL_BG,
+                                      fg=_SM_TEXT, anchor='w')
+        self.db_pass_label = tk.Label(inner, text='SQL password:', bg=_PANEL_BG,
+                                      fg=_SM_TEXT, anchor='w')
+        self.db_user_entry = bar_entry(self.db_user)
+        self.db_pass_entry = bar_entry(self.db_password, show='*')
+        self.db_user_label.grid(row=2, column=0, sticky='w', pady=(6, 1))
+        self.db_pass_label.grid(row=2, column=1, sticky='w', padx=(8, 0), pady=(6, 1))
+        self.db_user_entry.grid(row=3, column=0, sticky='ew', padx=(0, 4))
+        self.db_pass_entry.grid(row=3, column=1, sticky='ew', padx=(4, 0))
+
+    def _bind_path_display(self, ent, var) -> None:
+        """Editable Entry showing a middle-ellipsized view of var while
+        unfocused; focusing swaps in the real value for editing, and edits
+        write back on focus-out. Hover shows the full path. The variable
+        always holds the real, untruncated value."""
+        disp = StringVar()
+        ent.configure(textvariable=disp)
+        efont = tkfont.Font(font=ent.cget('font'))
+        self._path_entries[ent] = (disp, var)
+
+        def refresh(*_a):
+            if ent.focus_get() is ent:
+                return
+            disp.set(_ellipsize_middle(var.get(), efont,
+                                       max(40, ent.winfo_width() - 14)))
+
+        def on_focus_in(_e):
+            disp.set(var.get())
+            ent.icursor('end')
+
+        def on_focus_out(_e):
+            var.set(disp.get().strip())
+            refresh()
+
+        ent.bind('<FocusIn>', on_focus_in, add='+')
+        ent.bind('<FocusOut>', on_focus_out, add='+')
+        ent.bind('<Configure>', refresh, add='+')
+        var.trace_add('write', refresh)
+        _Tooltip(ent, var.get)
+        refresh()
+
+    def _commit_path_edits(self) -> None:
+        """Take a path the user typed into a focused entry (focus-out may
+        not have fired yet — macOS buttons don't steal focus)."""
+        focused = self.root.focus_get()
+        for ent, (disp, var) in self._path_entries.items():
+            if focused is ent:
+                var.set(disp.get().strip())
+
+    def _test_db_connection(self, side: str):
+        """Prove one side's database settings with the same read-only
+        connector a compare uses, off the UI thread. Purely diagnostic —
+        nothing is saved. Returns the worker thread (tests join it)."""
+        from . import dbsource
+        server = (self.old_db_server if side == 'old' else self.new_db_server).get().strip()
+        database = (self.old_db_database if side == 'old' else self.new_db_database).get().strip()
+        status = getattr(self, f'{side}_test_status')
+        if not server or not database:
+            status.configure(text='Enter a server and database first.', fg=_WARN_FG)
+            return None
+        trusted = self.db_windows_auth.get()
+        if not trusted and side == 'old' and self.db_diff_creds.get():
+            user, password = self.old_db_user.get().strip(), self.old_db_password.get()
+        else:
+            user, password = self.db_user.get().strip(), self.db_password.get()
+        getattr(self, f'{side}_test_btn').configure(state=DISABLED)
+        status.configure(text='Connecting…', fg=_SM_MUTED)
+
+        result = {}
+
+        def work():
+            db = dbsource.DwDatabase(label=side, server=server, database=database,
+                                     user=user, password=password, trusted=trusted)
+            result['ok'] = db.connect()
+            result['err'] = db.last_error
+            db.close()
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+
+        # Poll from the main thread rather than after() from the worker —
+        # Tk objects are only touched on the thread that owns them.
+        def poll():
+            if t.is_alive():
+                self.root.after(80, poll)
+                return
+            self._show_test_result(side, result.get('ok', False), server,
+                                   database, result.get('err', ''))
+
+        self.root.after(80, poll)
+        return t
+
+    def _show_test_result(self, side: str, ok: bool, server: str,
+                          database: str, err: str) -> None:
+        getattr(self, f'{side}_test_btn').configure(state=NORMAL)
+        status = getattr(self, f'{side}_test_status')
+        if ok:
+            status.configure(text=f'✓ Connected — {database} on {server}', fg=_OK_FG)
+        else:
+            status.configure(text='✕ ' + (err or 'Could not connect to the database.'),
+                             fg=_ERR_FG)
 
     def _sync_window_size(self) -> None:
-        """Recompute window height from which optional panels are open."""
-        height = 392
-        if self.show_db.get():
-            height += 196
-            if self.db_diff_creds.get() and not self.db_windows_auth.get():
-                height += 32
-        if self.show_log.get():
-            height += 228
-        self.root.geometry(f'760x{height}')
+        """Fit the window height to the open panels; keep the user's width.
+        Natural sizing (winfo_reqheight) instead of pixel constants so pane
+        content can change without the resize math drifting. Width never
+        goes below 640 so the two panes can't crush each other."""
+        self.root.update_idletasks()
+        height = max(self.root.winfo_reqheight(), 340)
+        width = self.root.winfo_width()
+        if width <= 1:   # not mapped yet (first call during _build_ui)
+            width = 880
+        self.root.geometry(f'{max(width, 640)}x{height}')
+        self.root.minsize(640, 340)
 
     def _apply_db_visibility(self) -> None:
-        """Show or hide the Database Options panel and resize the window."""
+        """Show or hide the whole database surface — both panes' sections
+        plus the shared login bar — and resize the window."""
         if not self.db_enabled:
             self._sync_window_size()
             return
-        if self.show_db.get():
-            self.db_frame.grid()
-        else:
-            self.db_frame.grid_remove()
+        show = self.show_db.get()
+        for w in (self.old_db_section, self.new_db_section, self.db_frame):
+            w.grid() if show else w.grid_remove()
         self._sync_window_size()
 
     def _apply_windows_auth_visibility(self) -> None:
@@ -755,6 +974,7 @@ class CompareApp:
         if self._worker and self._worker.is_alive():
             return
 
+        self._commit_path_edits()
         old_raw = self.old_path.get().strip()
         new_raw = self.new_path.get().strip()
         out_raw = self.output_path.get().strip()

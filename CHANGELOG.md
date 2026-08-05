@@ -4,6 +4,27 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-08-05
+
+### Changed
+
+- **Redesigned main window: old on the left, new on the right.** Each
+  side's project picker, group database settings, and (when different)
+  its login now live together in that side's pane, color-matched to the
+  report's orange/blue. The shared SQL login sits below both panes.
+- **Long paths stay readable.** File paths show with the middle
+  ellipsized — the folder root and filename stay visible at any window
+  width — with the full path on hover; the real value is always used.
+  The window also now has a minimum width so the panes never crush.
+
+### Added
+
+- **Test connection buttons, one per database.** Each side's Database
+  section can verify its settings on the spot with the same read-only
+  connector a compare uses: a green confirmation naming the database
+  and server, or the same friendly one-line explanation the report
+  shows when a connection fails. Nothing is saved by testing.
+
 ## [1.5.5] - 2026-08-05
 
 ### Added

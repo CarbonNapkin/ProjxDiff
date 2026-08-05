@@ -157,8 +157,12 @@ when the sides differ) — passwords are never accepted on the command line
 and never written to disk. Lookups are read-only and fail soft: with no
 database (or `pyodbc` missing) the report simply shows raw GUIDs.
 
-In the GUI this lives in a **Database Options** panel that is off by
-default — most installs have no group database and never need to see it.
+In the GUI, each side's pane has its own Database section with a **Test
+connection** button (a read-only probe that confirms the settings or
+explains what failed), and a checkbox reveals a separate login for the
+old database when the two sides differ. The whole database surface is
+off by default — most installs have no group database and never need
+to see it.
 The app creates its settings file at `~/.projxdiff`
 (`%USERPROFILE%\.projxdiff` on Windows) on first launch; to enable the
 panel, edit that file and flip the flag to true:

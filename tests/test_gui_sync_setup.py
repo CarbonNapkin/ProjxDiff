@@ -465,3 +465,138 @@ def test_run_compare_routes_the_old_side_login(tmp_path, monkeypatch):
         assert calls['old'] == calls['new'] == ('new-reader', 'new-secret')
     finally:
         root.destroy()
+
+
+# ---------- the pane layout, test-connection, and path display ----------
+
+def test_pane_layout_and_min_width():
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        assert app.old_pane.grid_info()['column'] == 0   # old = left
+        assert app.new_pane.grid_info()['column'] == 1   # new = right
+        assert hasattr(app, 'old_db_section') and hasattr(app, 'new_db_section')
+        root.update_idletasks()
+        assert root.minsize() == (640, 340)
+    finally:
+        root.destroy()
+
+
+class _FakeDb:
+    """Stands in for dbsource.DwDatabase in test-connection tests."""
+    calls = []
+
+    def __init__(self, **kw):
+        type(self).calls.append(kw)
+        self.last_error = '' if kw['server'] == 'GOOD' else 'Login failed — check the username and password.'
+
+    def connect(self):
+        return self.calls[-1]['server'] == 'GOOD'
+
+    def close(self):
+        pass
+
+
+def _run_test_connection(root, app, side):
+    import time
+    t = app._test_db_connection(side)
+    status = getattr(app, f'{side}_test_status')
+    if t is not None:
+        t.join(timeout=5)
+        for _ in range(50):  # pump until the main-thread poll delivers
+            root.update()
+            if status.cget('text') != 'Connecting…':
+                break
+            time.sleep(0.05)
+    return status
+
+
+def test_test_connection_success_and_failure(monkeypatch):
+    from dw_compare import dbsource
+    monkeypatch.setattr(dbsource, 'DwDatabase', _FakeDb)
+    _FakeDb.calls = []
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        app.old_db_server.set('GOOD')
+        app.old_db_database.set('DWGroup')
+        status = _run_test_connection(root, app, 'old')
+        assert 'Connected — DWGroup on GOOD' in status.cget('text')
+
+        app.new_db_server.set('BAD')
+        app.new_db_database.set('DWGroup')
+        status = _run_test_connection(root, app, 'new')
+        assert 'Login failed' in status.cget('text')
+        assert app.new_test_btn.cget('state') == 'normal'
+    finally:
+        root.destroy()
+
+
+def test_test_connection_requires_server_and_database():
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        assert app._test_db_connection('old') is None
+        assert 'server and database' in app.old_test_status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_test_connection_routes_old_side_login(monkeypatch):
+    from dw_compare import dbsource
+    monkeypatch.setattr(dbsource, 'DwDatabase', _FakeDb)
+    _FakeDb.calls = []
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        app.old_db_server.set('GOOD')
+        app.old_db_database.set('DWGroup')
+        app.db_user.set('shared-user')
+        app.db_password.set('shared-pw')
+        app.old_db_user.set('old-user')
+        app.old_db_password.set('old-pw')
+
+        app.db_diff_creds.set(True)
+        _run_test_connection(root, app, 'old')
+        assert _FakeDb.calls[-1]['user'] == 'old-user'
+        assert _FakeDb.calls[-1]['password'] == 'old-pw'
+
+        app.db_diff_creds.set(False)
+        _run_test_connection(root, app, 'old')
+        assert _FakeDb.calls[-1]['user'] == 'shared-user'
+    finally:
+        root.destroy()
+
+
+def test_ellipsize_middle_keeps_root_and_filename():
+    import tkinter as tk
+    from tkinter import font as tkfont
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    try:
+        f = tkfont.Font(family='Helvetica', size=12)
+        full = r'C:\DriveWorksFiles\Production\Conveyors\2026\Conveyor RX (rev C).driveprojx'
+        out = gui_mod._ellipsize_middle(full, f, 260)
+        assert out != full and '…' in out
+        assert out.startswith('C:')
+        assert out.endswith('.driveprojx')
+        assert f.measure(out) <= 260
+        # Plenty of room -> untouched.
+        assert gui_mod._ellipsize_middle('short', f, 500) == 'short'
+    finally:
+        root.destroy()
+
+
+def test_path_display_ellipsizes_but_variable_keeps_full_value():
+    root, app = _make_app()
+    try:
+        full = r'C:\Some\Extremely\Deep\Folder\Tree\That\Never\Ends\Project.driveprojx'
+        app.old_path.set(full)
+        root.update_idletasks()
+        disp, var = app._path_entries[app.old_entry]
+        assert var.get() == full            # the real value is untruncated
+        assert app.old_entry.get() != ''    # something is displayed
+    finally:
+        root.destroy()
