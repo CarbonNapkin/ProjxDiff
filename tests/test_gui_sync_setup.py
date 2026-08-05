@@ -371,3 +371,97 @@ def test_compare_with_flag_off_leaves_saved_db_values_untouched(tmp_path):
         assert gui_mod._load_settings()['old_db_server'] == 'KEEP\\ME'
     finally:
         root.destroy()
+
+
+# ---------- per-side database logins ----------
+
+def _visible(widget):
+    return bool(widget.grid_info())
+
+
+def test_old_side_login_hidden_until_checked_and_labels_flip():
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        assert not _visible(app.old_db_user_entry)
+        assert app.db_user_label.cget('text') == 'SQL username:'
+
+        app.db_diff_creds.set(True)
+        app._apply_windows_auth_visibility()
+        assert _visible(app.old_db_user_entry)
+        assert _visible(app.old_db_pass_entry)
+        assert app.db_user_label.cget('text') == 'New DB username:'
+        # Both password entries are masked.
+        assert app.db_pass_entry.cget('show') == '*'
+        assert app.old_db_pass_entry.cget('show') == '*'
+
+        # Windows auth hides every SQL-login widget, including the pair.
+        app.db_windows_auth.set(True)
+        app._apply_windows_auth_visibility()
+        assert not _visible(app.db_user_entry)
+        assert not _visible(app.db_diff_creds_check)
+        assert not _visible(app.old_db_user_entry)
+    finally:
+        root.destroy()
+
+
+def test_neither_password_is_ever_saved(tmp_path):
+    gui_mod._save_setting('enable_db', True)
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    root, app = _make_app()
+    try:
+        app._run_compare = lambda *a, **k: None
+        app.old_path.set(str(tmp_path / 'a'))
+        app.new_path.set(str(tmp_path / 'b'))
+        app.db_diff_creds.set(True)
+        app.db_user.set('new-reader')
+        app.db_password.set('new-secret')
+        app.old_db_user.set('old-reader')
+        app.old_db_password.set('old-secret')
+        app._on_compare()
+        app._worker.join(timeout=5)
+
+        raw = gui_mod._SETTINGS_PATH.read_text(encoding='utf-8')
+        settings = gui_mod._load_settings()
+        assert settings['db_user'] == 'new-reader'
+        assert settings['old_db_user'] == 'old-reader'
+        assert settings['db_diff_creds'] is True
+        assert 'new-secret' not in raw and 'old-secret' not in raw
+        assert 'password' not in raw.lower()
+    finally:
+        root.destroy()
+
+
+def test_run_compare_routes_the_old_side_login(tmp_path, monkeypatch):
+    calls = {}
+
+    def fake_resolve(side, server, database, index, user='', password='', sql_auth=False):
+        calls[side] = (user, password)
+        return {}, {}, {}, None
+
+    monkeypatch.setattr(gui_mod, 'resolve_db_names', fake_resolve)
+    _write_projx(tmp_path / 'old.driveprojx')
+    _write_projx(tmp_path / 'new.driveprojx')
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        db = {'old_server': 'S1', 'old_database': 'D1',
+              'new_server': 'S2', 'new_database': 'D2',
+              'windows_auth': False,
+              'user': 'new-reader', 'password': 'new-secret',
+              'diff_creds': True,
+              'old_user': 'old-reader', 'old_password': 'old-secret'}
+        app._run_compare(tmp_path / 'old.driveprojx', tmp_path / 'new.driveprojx',
+                         tmp_path / 'out.html', open_browser=False, db=db)
+        assert calls['old'] == ('old-reader', 'old-secret')
+        assert calls['new'] == ('new-reader', 'new-secret')
+
+        # Checkbox off: the shared login applies to both sides.
+        calls.clear()
+        db['diff_creds'] = False
+        app._run_compare(tmp_path / 'old.driveprojx', tmp_path / 'new.driveprojx',
+                         tmp_path / 'out.html', open_browser=False, db=db)
+        assert calls['old'] == calls['new'] == ('new-reader', 'new-secret')
+    finally:
+        root.destroy()

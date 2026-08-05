@@ -4,6 +4,17 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Per-side database logins in the GUI.** When the old and new group
+  databases use different SQL logins, check "Different login for the old
+  database" in the Database Options panel to reveal a second
+  username/password pair for the old side; the main pair then applies to
+  the new side. As always, usernames are remembered between sessions and
+  passwords never are.
+
 ## [1.5.4] - 2026-08-05
 
 ### Fixed

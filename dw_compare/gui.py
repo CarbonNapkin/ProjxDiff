@@ -233,6 +233,13 @@ class CompareApp:
         self.db_windows_auth = BooleanVar(value=bool(saved.get('db_windows_auth', False)))
         self.db_user = StringVar(value=_setting_str(saved, 'db_user'))
         self.db_password = StringVar()
+        # Optional per-side login: when the old and new group databases use
+        # different SQL logins (prod vs staging servers), a checkbox reveals
+        # a second username/password pair for the old side; the main pair
+        # then applies to the new side. Both passwords are in-memory only.
+        self.db_diff_creds = BooleanVar(value=bool(saved.get('db_diff_creds', False)))
+        self.old_db_user = StringVar(value=_setting_str(saved, 'old_db_user'))
+        self.old_db_password = StringVar()
 
         # Last folder used per file-picker field ('old' / 'new' / 'output'),
         # so each Browse… remembers its own location instead of sharing
@@ -598,10 +605,29 @@ class CompareApp:
         self.db_user_entry = db_entry(self.db_user)
         self.db_pass_label = db_label('SQL password:')
         self.db_pass_entry = db_entry(self.db_password, show='*')
-        self.db_user_label.grid(row=4, column=0, sticky='w', padx=10, pady=(2, 8))
-        self.db_user_entry.grid(row=4, column=1, sticky='ew', padx=(0, 10), pady=(2, 8))
-        self.db_pass_label.grid(row=4, column=2, sticky='w', padx=10, pady=(2, 8))
-        self.db_pass_entry.grid(row=4, column=3, sticky='ew', padx=(0, 10), pady=(2, 8))
+        self.db_user_label.grid(row=4, column=0, sticky='w', padx=10, pady=(2, 2))
+        self.db_user_entry.grid(row=4, column=1, sticky='ew', padx=(0, 10), pady=(2, 2))
+        self.db_pass_label.grid(row=4, column=2, sticky='w', padx=10, pady=(2, 2))
+        self.db_pass_entry.grid(row=4, column=3, sticky='ew', padx=(0, 10), pady=(2, 2))
+
+        self.db_diff_creds_check = tk.Checkbutton(
+            db_frame, text='Different login for the old database',
+            variable=self.db_diff_creds, bg='#eef1f5', fg=_SM_TEXT,
+            activebackground='#eef1f5', selectcolor='#ffffff', anchor='w',
+            highlightthickness=0, cursor='hand2',
+            command=self._apply_windows_auth_visibility,
+        )
+        self.db_diff_creds_check.grid(row=5, column=0, columnspan=4, sticky='w',
+                                      padx=10, pady=(0, 2))
+
+        self.old_db_user_label = db_label('Old DB username:')
+        self.old_db_user_entry = db_entry(self.old_db_user)
+        self.old_db_pass_label = db_label('Old DB password:')
+        self.old_db_pass_entry = db_entry(self.old_db_password, show='*')
+        self.old_db_user_label.grid(row=6, column=0, sticky='w', padx=10, pady=(2, 8))
+        self.old_db_user_entry.grid(row=6, column=1, sticky='ew', padx=(0, 10), pady=(2, 8))
+        self.old_db_pass_label.grid(row=6, column=2, sticky='w', padx=10, pady=(2, 8))
+        self.old_db_pass_entry.grid(row=6, column=3, sticky='ew', padx=(0, 10), pady=(2, 8))
 
         db_frame.columnconfigure(1, weight=1)
         db_frame.columnconfigure(3, weight=1)
@@ -610,7 +636,9 @@ class CompareApp:
         """Recompute window height from which optional panels are open."""
         height = 392
         if self.show_db.get():
-            height += 168
+            height += 196
+            if self.db_diff_creds.get() and not self.db_windows_auth.get():
+                height += 32
         if self.show_log.get():
             height += 228
         self.root.geometry(f'760x{height}')
@@ -627,14 +655,26 @@ class CompareApp:
         self._sync_window_size()
 
     def _apply_windows_auth_visibility(self) -> None:
-        """Show the SQL username/password fields unless Windows integrated
-        auth is selected — SQL Server login is the default here."""
+        """Show the SQL login fields unless Windows integrated auth is
+        selected — SQL Server login is the default here. The second
+        (old-side) pair appears only when its checkbox is on; the shared
+        labels then read 'New DB …' so the two pairs are unambiguous."""
         if not self.db_enabled:
             return
-        widgets = (self.db_user_label, self.db_user_entry,
-                   self.db_pass_label, self.db_pass_entry)
-        for w in widgets:
-            w.grid_remove() if self.db_windows_auth.get() else w.grid()
+        sql_auth = not self.db_windows_auth.get()
+        diff = sql_auth and self.db_diff_creds.get()
+        shared = (self.db_user_label, self.db_user_entry,
+                  self.db_pass_label, self.db_pass_entry,
+                  self.db_diff_creds_check)
+        for w in shared:
+            w.grid() if sql_auth else w.grid_remove()
+        old_pair = (self.old_db_user_label, self.old_db_user_entry,
+                    self.old_db_pass_label, self.old_db_pass_entry)
+        for w in old_pair:
+            w.grid() if diff else w.grid_remove()
+        self.db_user_label.configure(text='New DB username:' if diff else 'SQL username:')
+        self.db_pass_label.configure(text='New DB password:' if diff else 'SQL password:')
+        self._sync_window_size()
 
     def _apply_log_visibility(self) -> None:
         """Show or hide the log pane (View ▸ Show Log) and resize the window."""
@@ -751,13 +791,18 @@ class CompareApp:
                 'windows_auth': self.db_windows_auth.get(),
                 'user': self.db_user.get().strip(),
                 'password': self.db_password.get(),
+                'diff_creds': self.db_diff_creds.get() and not self.db_windows_auth.get(),
+                'old_user': self.old_db_user.get().strip(),
+                'old_password': self.old_db_password.get(),
             }
             for key, value in (('old_db_server', db['old_server']),
                                ('new_db_server', db['new_server']),
                                ('old_db_database', db['old_database']),
                                ('new_db_database', db['new_database']),
                                ('db_windows_auth', db['windows_auth']),
-                               ('db_user', db['user'])):
+                               ('db_user', db['user']),
+                               ('db_diff_creds', self.db_diff_creds.get()),
+                               ('old_db_user', db['old_user'])):
                 _save_setting(key, value)
 
         # Clear log, disable button, show progress in the status line.
@@ -806,10 +851,14 @@ class CompareApp:
             if resolve_db_names and db:
                 sql_auth = not db['windows_auth']
                 for side, proj in (('old', old_proj), ('new', new_proj)):
+                    if side == 'old' and db.get('diff_creds'):
+                        user, password = db['old_user'], db['old_password']
+                    else:
+                        user, password = db['user'], db['password']
                     resolved, props, types, err = resolve_db_names(
                         side, db[f'{side}_server'], db[f'{side}_database'],
-                        proj.component_index, user=db['user'],
-                        password=db['password'], sql_auth=sql_auth)
+                        proj.component_index, user=user,
+                        password=password, sql_auth=sql_auth)
                     if err:
                         db_warnings.append(f'{side.title()} database: {err}')
                     if side == 'old':
