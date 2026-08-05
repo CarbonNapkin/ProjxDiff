@@ -20,3 +20,4 @@ dw_comparison.html
 # Tests use synthetic inline XML fixtures instead.
 *.driveprojx
 Model 630.driveprojx
+.coverage
