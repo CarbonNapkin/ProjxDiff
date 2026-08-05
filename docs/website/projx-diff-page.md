@@ -14,11 +14,16 @@ covering variables, rules, forms, calculation and lookup tables, macros,
 documents, and navigation — with inline formula diffs, search, and filters.
 Free, runs entirely on your machine, no Python required.
 
+*[screenshot: app window in its DEFAULT view — two panes, no Database
+sections (that surface is feature-flagged and never shown in marketing).
+Site asset app.png; alt: "Projx Diff app window: old and new project
+pickers side by side with a Compare button"]*
+
 *[screenshot: docs/screenshots/report.png — alt: "Projx Diff comparison
 report showing added, modified, and unchanged variables with inline formula
 diffs"]*
 
-**New in 1.5: a redesigned report, in light and dark.** Diff totals and a
+**A redesigned report, in light and dark.** Diff totals and a
 per-section navigator with live change counts sit in a left sidebar, so
 even a large diff reads at a glance. Auto/Light/Dark themes follow your OS
 or your explicit choice. Status colors are colorblind-safe by design, and
