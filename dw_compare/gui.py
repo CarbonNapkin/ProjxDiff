@@ -23,7 +23,7 @@ import tkinter as tk
 from tkinter import Tk, StringVar, BooleanVar, END, DISABLED, NORMAL, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 
-from ._version import __version__, __author__, __url__, __license__
+from ._version import __version__, __author__, __license__
 from .parsers import load_project
 from .report import generate_html_report
 from .update_check import check_for_update, DOWNLOAD_PAGE
@@ -323,10 +323,10 @@ class CompareApp:
         para('Everything runs locally; your project files never leave your '
              'machines.')
 
-        link = tk.Label(body, text='More at ' + __url__, bg=_SM_CARD, fg=_SM_ACCENT,
-                        cursor='hand2', anchor='w')
+        link = tk.Label(body, text='More at ' + DOWNLOAD_PAGE, bg=_SM_CARD,
+                        fg=_SM_ACCENT, cursor='hand2', anchor='w')
         link.pack(fill='x', pady=(10, 0))
-        link.bind('<Button-1>', lambda _e: webbrowser.open(__url__))
+        link.bind('<Button-1>', lambda _e: webbrowser.open(DOWNLOAD_PAGE))
 
         self._finish_dialog(top)
 
@@ -434,10 +434,10 @@ class CompareApp:
                  bg=_SM_CARD, fg=_SM_MUTED, justify='left', anchor='w',
                  wraplength=440).pack(fill='x', pady=(8, 0))
 
-        link = tk.Label(body, text=__url__, bg=_SM_CARD, fg=_SM_ACCENT,
+        link = tk.Label(body, text=DOWNLOAD_PAGE, bg=_SM_CARD, fg=_SM_ACCENT,
                         cursor='hand2', anchor='w')
         link.pack(fill='x', pady=(10, 0))
-        link.bind('<Button-1>', lambda _e: webbrowser.open(__url__))
+        link.bind('<Button-1>', lambda _e: webbrowser.open(DOWNLOAD_PAGE))
 
         self._finish_dialog(top)
 

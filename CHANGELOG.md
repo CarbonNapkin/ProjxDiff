@@ -4,6 +4,20 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.3] - 2026-08-05
+
+### Changed
+
+- **The app now creates its settings file on first launch** (`~/.projxdiff`,
+  `%USERPROFILE%\.projxdiff` on Windows) with `"enable_db": false`, so
+  enabling the Database Options panel is a one-word edit instead of
+  creating the file by hand.
+- **Browse folders are remembered across sessions** — each picker (old
+  project, new project, output) reopens in the folder you last used.
+- **In-app links now go to the download page** — the Help and About
+  links open base10consultants.com/tools/projx-diff instead of the
+  GitHub repository. (Update notices already did.)
+
 ## [1.5.2] - 2026-08-04
 
 ### Changed
