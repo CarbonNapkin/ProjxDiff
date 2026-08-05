@@ -21,6 +21,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   answers (SQL Browser service off, UDP 1434 blocked) it says so and
   you type the name instead. Hovering the Server field shows the
   accepted formats — HOST, HOST\INSTANCE, or HOST,PORT.
+- **Nightly sync reports can resolve names too.** Give a sync source its
+  group database (`db_server`/`db_database` in the config, per source or
+  shared) and that source's nightly HTML reports resolve captured
+  model/rule references to real names. **Windows integrated
+  authentication only**: passwords are never stored, so the account the
+  scheduled task runs as must itself have read access to the database —
+  without integrated auth, the nightly compares cannot also connect to
+  the database (the sync still runs; reports show raw ids). One
+  read-only connection per source per run; a database outage never
+  stops the sync. JSON diffs keep raw ids — their schema is versioned.
 
 ## [1.6.0] - 2026-08-05
 

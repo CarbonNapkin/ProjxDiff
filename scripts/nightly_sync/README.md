@@ -67,6 +67,36 @@ top-level values; `owners` entries match either `"Roof Curb"` (all sources)
 or `"prod/Roof Curb"` (one source). An unreachable source is flagged and
 skipped; the others still sync.
 
+### Group database name resolution in nightly reports (optional)
+
+Give a source its DriveWorks group database and that source's nightly HTML
+reports resolve captured model/rule references to real component and model
+names instead of raw ids:
+
+```json
+"prod": { "source_dir": "...", "archive_repo": "...",
+          "db_server": "KEES-DB", "db_database": "KEES" }
+```
+
+`db_server` accepts `HOST`, `HOST\\INSTANCE`, or `HOST,PORT`. Top-level
+`db_server`/`db_database` apply to every source that doesn't set its own
+(prod and staging usually point at different group databases, so per-source
+is the norm). Lookups are read-only; if the database is unreachable during
+a run, the sync completes normally and that night's reports show raw ids.
+The JSON diffs always keep raw ids — their schema is versioned and consumed
+by pipelines.
+
+> **Windows integrated authentication only.** The app never stores
+> passwords, and an unattended nightly task has nobody to type one — so
+> the Windows account the scheduled task runs as must itself be granted
+> read-only access to the group database (in SSMS:
+> `CREATE USER [DOMAIN\account] FOR LOGIN [DOMAIN\account]`, then add it
+> to the `db_datareader` role). **If you can't use integrated auth, you
+> cannot run the nightly compares and connect to the database** — the
+> sync itself still runs fine, but its reports will show raw ids; SQL
+> Server logins work only in interactive compares (GUI or CLI), where
+> the password is supplied at run time.
+
 Existing single-source configs are untouched by all of this — same behavior,
 paths, and census layout as before. To consolidate two deployed single-source
 setups into one site config, point the site config at a fresh `data_dir`

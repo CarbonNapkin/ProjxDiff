@@ -110,3 +110,67 @@ def test_missing_config_error_is_friendly(tmp_path):
         sync_mod.load_config(tmp_path / 'nope.json')
     with pytest.raises(SystemExit, match='--init-config'):
         sync_mod.load_config(tmp_path / 'nope.json')
+
+
+# ---------- group-db keys in configs (nightly name resolution) ----------
+
+def test_load_config_carries_db_keys_per_source_with_fallback(tmp_path):
+    for d in ('p', 'q', 'r1', 'r2'):
+        (tmp_path / d).mkdir()
+    cfg_path = tmp_path / 'config.json'
+    cfg_path.write_text(json.dumps({
+        'sources': {
+            'prod': {'source_dir': str(tmp_path / 'p'),
+                     'archive_repo': str(tmp_path / 'r1'),
+                     'db_server': 'KEES-DB', 'db_database': 'KEES'},
+            'staging': {'source_dir': str(tmp_path / 'q'),
+                        'archive_repo': str(tmp_path / 'r2')},
+        },
+        'db_server': 'SHARED', 'db_database': 'SharedDB',
+        'data_dir': str(tmp_path / 'data'),
+    }), encoding='utf-8')
+    cfg = sync_mod.load_config(cfg_path)
+    assert cfg['sources_resolved']['prod']['db_server'] == 'KEES-DB'
+    assert cfg['sources_resolved']['prod']['db_database'] == 'KEES'
+    # Sources without their own keys inherit the top-level ones.
+    assert cfg['sources_resolved']['staging']['db_server'] == 'SHARED'
+    assert cfg['sources_resolved']['staging']['db_database'] == 'SharedDB'
+
+
+def test_load_config_db_keys_default_empty(tmp_path):
+    (tmp_path / 'src').mkdir()
+    cfg_path = tmp_path / 'config.json'
+    cfg_path.write_text(json.dumps({
+        'source_dir': str(tmp_path / 'src'),
+        'archive_repo': str(tmp_path / 'repo'),
+        'data_dir': str(tmp_path / 'data'),
+    }), encoding='utf-8')
+    cfg = sync_mod.load_config(cfg_path)
+    assert cfg['sources_resolved']['']['db_server'] == ''
+    assert cfg['sources_resolved']['']['db_database'] == ''
+
+
+def test_open_group_db_absent_config_is_none():
+    assert sync_mod.open_group_db({'db_server': '', 'db_database': ''}) is None
+    assert sync_mod.open_group_db({}) is None
+
+
+def test_open_group_db_connect_failure_is_none_not_fatal(monkeypatch):
+    from dw_compare import dbsource
+
+    class Dead:
+        last_error = 'Server not found or not reachable'
+
+        def __init__(self, **kw):
+            assert kw['trusted'] is True      # integrated auth only
+            assert 'password' not in kw or not kw.get('password')
+
+        def connect(self):
+            return False
+
+    monkeypatch.setattr(dbsource, 'DwDatabase', Dead)
+    assert sync_mod.open_group_db({'db_server': 'S', 'db_database': 'D'}) is None
+
+
+def test_resolve_names_without_db_is_none_triple():
+    assert sync_mod._resolve_names(None, object()) == (None, None, None)

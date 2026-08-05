@@ -184,6 +184,11 @@ def load_config(path: Path) -> dict:
                 'archive_repo': Path(src['archive_repo']),
                 'exclude': src.get('exclude', cfg['exclude']),
                 'recursive': src.get('recursive', cfg['recursive']),
+                # Optional group database for name resolution in nightly
+                # reports; per-source (prod and staging usually have
+                # different group DBs), falling back to top-level keys.
+                'db_server': str(src.get('db_server', cfg.get('db_server', '')) or ''),
+                'db_database': str(src.get('db_database', cfg.get('db_database', '')) or ''),
             }
         cfg['data_dir'] = Path(cfg['data_dir'])
         cfg['sources_resolved'] = resolved
@@ -199,6 +204,8 @@ def load_config(path: Path) -> dict:
         'archive_repo': cfg['archive_repo'],
         'exclude': cfg['exclude'],
         'recursive': cfg['recursive'],
+        'db_server': str(cfg.get('db_server') or ''),
+        'db_database': str(cfg.get('db_database') or ''),
     }}
     return cfg
 
@@ -409,9 +416,52 @@ def resolve_author(name: str, project_root: Path, cfg: dict) -> str:
 
 # ------------------------------------------------------------------ sync ----
 
+def open_group_db(scfg: dict):
+    """Open the source's optional DriveWorks group database for name
+    resolution in nightly reports (config keys db_server/db_database).
+
+    WINDOWS INTEGRATED AUTH ONLY, by design: the app never stores
+    passwords, and an unattended nightly task has nobody to type one — so
+    the account the scheduled task runs as must itself be granted
+    read-only access to the group database. Without integrated auth there
+    is no way to run the nightly compares AND connect to the database;
+    the sync still runs fully, its reports just show raw ids.
+
+    Returns a connected DwDatabase or None; failure is logged, never
+    fatal — a DB outage at 2 a.m. must not stop the archive run."""
+    server, database = scfg.get('db_server', ''), scfg.get('db_database', '')
+    if not server or not database:
+        return None
+    from . import dbsource
+    db = dbsource.DwDatabase(label='sync', server=server, database=database,
+                             trusted=True)
+    if not db.connect():
+        log.warning('group db unavailable (%s / %s): %s -- reports will '
+                    'show raw ids this run', server, database, db.last_error)
+        return None
+    log.info('group db connected: %s / %s (integrated auth)', server, database)
+    return db
+
+
+def _resolve_names(db, proj):
+    """(resolved, prop_names, prop_types) for one project via an open
+    group-db connection; (None, None, None) without one."""
+    if db is None:
+        return None, None, None
+    from . import idmap, components
+    resolver = idmap.IdResolver(db=db)
+    resolved = components.resolve_names(proj.component_index, resolver)
+    ccrefs = set(proj.component_index.trid_to_ccref.values())
+    if ccrefs:
+        props, types = db.fetch_captured_property_names_and_types(ccrefs)
+    else:
+        props, types = {}, {}
+    return resolved, props, types
+
+
 def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
              run_date: str, conn, reports_dir: Path, dry_run: bool,
-             census: dict, source: str = ''):
+             census: dict, source: str = '', group_db=None):
     """Sync a single project. Returns 'changed', 'new', or 'unchanged'."""
     name = zip_path.stem
     key = census_key(source, name)
@@ -462,8 +512,14 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     day_dir.mkdir(parents=True, exist_ok=True)
     (day_dir / f'{name}.json').write_text(
         json.dumps(diff, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    # Group-db name resolution feeds the HTML report only; the JSON diff
+    # keeps raw ids (its schema is versioned and consumed by pipelines).
+    old_resolved, old_props, old_types = _resolve_names(group_db, old_proj)
+    new_resolved, new_props, new_types = _resolve_names(group_db, new_proj)
     (day_dir / f'{name}.html').write_text(
-        generate_html_report(old_proj, new_proj, f'{name} (previous)', f'{name} (current)'),
+        generate_html_report(old_proj, new_proj, f'{name} (previous)', f'{name} (current)',
+                             old_resolved, new_resolved, old_props, new_props,
+                             old_types, new_types),
         encoding='utf-8')
 
     record_diff(conn, run_date, name, owner, diff, source)
@@ -589,6 +645,7 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
     seen = {z.stem for z in to_sync}
 
     staging_root = Path(tempfile.mkdtemp(prefix='projx_sync_'))
+    group_db = None if dry_run else open_group_db(scfg)
     try:
         for zip_path in to_sync:
             try:
@@ -596,13 +653,15 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
                 proj_staging.mkdir()
                 outcome = sync_one(zip_path, scfg['archive_repo'], proj_staging,
                                    cfg, run_date, conn, reports_dir, dry_run,
-                                   census, sname)
+                                   census, sname, group_db=group_db)
                 counts[outcome] += 1
             except Exception as e:
                 log.exception('[ERROR] %s: %s', zip_path.name, e)
                 errors.append(f'{zip_path.name}: {e}')
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
+        if group_db is not None:
+            group_db.close()
 
     handle_missing(seen, scfg['archive_repo'], cfg, run_date, conn, dry_run,
                    census, sname)

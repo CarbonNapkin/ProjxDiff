@@ -303,3 +303,56 @@ def test_load_config_rejects_missing_keys(tmp_path):
     p.write_text('{"source_dir": "x"}', encoding='utf-8')
     with pytest.raises(SystemExit):
         nightly_sync.load_config(p)
+
+
+def test_group_db_resolution_flows_into_nightly_html(site, monkeypatch):
+    """With db_server/db_database configured, a changed project's HTML
+    report gets name resolution (one connection per source, closed after);
+    the JSON diff keeps raw ids."""
+    from dw_compare import sync as sync_mod
+
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg['db_server'], cfg['db_database'] = 'KEES-DB', 'KEES'
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+
+    events = []
+
+    class FakeDb:
+        def close(self):
+            events.append('closed')
+
+    def fake_open(scfg):
+        events.append(f"open:{scfg['db_server']}/{scfg['db_database']}")
+        return FakeDb()
+
+    captured = {}
+    monkeypatch.setattr(sync_mod, 'open_group_db', fake_open)
+    monkeypatch.setattr(sync_mod, '_resolve_names',
+                        lambda db, proj: ({'guid-1': 'Bracket Assembly'},
+                                          {'prop-1': 'Material'}, {}))
+    monkeypatch.setattr(sync_mod, 'generate_html_report',
+                        lambda old, new, on, nn, *res: captured.update(res=res)
+                        or '<html>ok</html>')
+
+    assert _run(site) == 0                     # night 1: all new, no diffs
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    assert _run(site) == 0                     # night 2: Alpha changed
+
+    old_resolved, new_resolved, old_props, new_props, old_types, new_types = captured['res']
+    assert old_resolved == new_resolved == {'guid-1': 'Bracket Assembly'}
+    assert old_props == {'prop-1': 'Material'}
+    assert events.count('open:KEES-DB/KEES') == 2   # once per run, not per project
+    assert events.count('closed') == 2
+
+
+def test_dry_run_never_opens_group_db(site, monkeypatch):
+    from dw_compare import sync as sync_mod
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg['db_server'], cfg['db_database'] = 'KEES-DB', 'KEES'
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+
+    def boom(scfg):
+        raise AssertionError('dry run must not touch the database')
+
+    monkeypatch.setattr(sync_mod, 'open_group_db', boom)
+    assert _run(site, dry_run=True) == 0
