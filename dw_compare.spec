@@ -9,6 +9,13 @@
 # Usage:
 #   pyinstaller dw_compare.spec --clean --noconfirm
 #
+# With PROJX_ONEDIR=1 in the environment, builds a onedir variant instead
+# (dist/ProjxDiff-app/: ProjxDiff.exe + _internal/). The Windows installer
+# ships THIS variant so launch does no self-extraction into %TEMP% — the
+# extraction step of a onefile exe races antivirus scanners on unknown new
+# binaries and loses ("Failed to load Python DLL ... _MEI...\python312.dll").
+# The portable download stays onefile: one copyable file is its whole point.
+#
 # Optional icon files (skipped silently if absent):
 #   assets/icon.ico  (Windows .exe icon)
 #   assets/icon.icns (macOS .app icon)
@@ -96,30 +103,63 @@ a = Analysis(
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='ProjxDiff',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=chosen_icon,
-    version=exe_version,
-)
+_onedir = os.environ.get('PROJX_ONEDIR') == '1'
 
-if sys.platform == 'darwin':
+if _onedir:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name='ProjxDiff',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        console=False,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=chosen_icon,
+        version=exe_version,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='ProjxDiff-app',
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name='ProjxDiff',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=False,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=chosen_icon,
+        version=exe_version,
+    )
+
+if sys.platform == 'darwin' and not _onedir:
     app = BUNDLE(
         exe,
         name='ProjxDiff.app',

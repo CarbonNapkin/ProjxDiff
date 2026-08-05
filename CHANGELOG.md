@@ -4,7 +4,7 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.5.5] - 2026-08-05
 
 ### Added
 
@@ -14,6 +14,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
   username/password pair for the old side; the main pair then applies to
   the new side. As always, usernames are remembered between sessions and
   passwords never are.
+
+### Changed
+
+- **Windows installs launch without unpacking to Temp.** The installer
+  now lays the app's runtime files down in Program Files (a "onedir"
+  build) instead of shipping a self-extracting exe, which eliminates the
+  antivirus race behind the "Failed to load Python DLL" error some
+  machines hit on first launch after an update — and makes startup
+  faster. The portable single-file ProjxDiff.exe is unchanged.
 
 ## [1.5.4] - 2026-08-05
 

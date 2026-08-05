@@ -2,9 +2,12 @@
 ;
 ; Compiled by the release workflow (release.yml) on the Windows runner:
 ;   ISCC.exe /DAppVersion=<x.y.z> scripts\installer\ProjxDiff.iss
-; after PyInstaller has produced dist\ProjxDiff.exe. Produces
+; after PyInstaller has produced the onedir build at dist\ProjxDiff-app\
+; (PROJX_ONEDIR=1 — the exe plus its runtime in _internal\). Produces
 ; dist\ProjxDiff-setup.exe: Program Files install, Start Menu entry,
-; optional desktop shortcut, and a clean uninstaller.
+; optional desktop shortcut, and a clean uninstaller. Shipping onedir means
+; launch does no self-extraction into %TEMP%, which removes the
+; antivirus-vs-extraction race a onefile exe hits on first run.
 ;
 ; Deliberately NOT registered: any .driveprojx file association — that
 ; extension belongs to DriveWorks itself and the installer must never
@@ -45,8 +48,13 @@ PrivilegesRequiredOverridesAllowed=dialog
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Wipe the bundled runtime from any previous version before laying down the
+; new one, so an upgrade can never mix old and new DLLs.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
-Source: "..\..\dist\ProjxDiff.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\ProjxDiff-app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\Projx Diff"; Filename: "{app}\ProjxDiff.exe"

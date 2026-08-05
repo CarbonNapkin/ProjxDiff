@@ -73,6 +73,18 @@ jobs:
       - name: Build
         run: python -m PyInstaller dw_compare.spec --clean --noconfirm
 
+      # Second Windows build: the onedir variant the installer ships (no
+      # %TEMP% self-extraction at launch — see dw_compare.spec). --clean
+      # only clears the build workdir; dist\ProjxDiff.exe from the first
+      # build survives.
+      - name: Build onedir variant for the installer (Windows)
+        if: matrix.target_name == 'windows'
+        shell: pwsh
+        run: |
+          $env:PROJX_ONEDIR = '1'
+          python -m PyInstaller dw_compare.spec --clean --noconfirm
+          if (-not (Test-Path "dist\ProjxDiff-app\ProjxDiff.exe")) { Write-Error "onedir build missing"; exit 1 }
+
       # Run the actual built binary through a real --sync against a tiny fake
       # site. Catches packaging breaks (missing hidden imports, bootloader
       # issues) that unit tests on source can never see.
@@ -91,6 +103,13 @@ jobs:
           # class of packaging bug before it ships.
           $d = Start-Process -FilePath "dist\ProjxDiff.exe" -ArgumentList "--doctor" -Wait -PassThru -NoNewWindow
           if ($d.ExitCode -ne 0) { Write-Error "doctor check failed (pyodbc not bundled?)"; exit 1 }
+          # Same two checks against the onedir variant the installer ships.
+          python scripts/make_smoke_site.py smoke-onedir
+          $q = Start-Process -FilePath "dist\ProjxDiff-app\ProjxDiff.exe" -ArgumentList "--sync","smoke-onedir\config.json" -Wait -PassThru -NoNewWindow
+          if ($q.ExitCode -ne 0) { Write-Error "onedir sync failed"; exit 1 }
+          if (-not (Test-Path "smoke-onedir\repo\Smoke")) { Write-Error "onedir: project not archived"; exit 1 }
+          $od = Start-Process -FilePath "dist\ProjxDiff-app\ProjxDiff.exe" -ArgumentList "--doctor" -Wait -PassThru -NoNewWindow
+          if ($od.ExitCode -ne 0) { Write-Error "onedir doctor check failed"; exit 1 }
 
       - name: Smoke test binary (macOS)
         if: matrix.target_name == 'macos'
