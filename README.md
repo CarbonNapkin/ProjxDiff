@@ -13,7 +13,7 @@ A command-line tool to compare two versions of a DriveWorks™ project and gener
 ## Features
 
 - **Direct .driveprojx support** - Pass project files directly, no manual extraction needed
-- **Recursive scanning** - Finds all DriveWorks XML files in nested folders
+- **Recursive scanning** - Finds all project files in nested folders
 - **Compares everything** - Variables (with resolved category names), Constants, Special Variables, Calculation Tables (including row-level rules), Component Tasks, Documents, Lookup Tables, Data Tables, Specification Macros (per-task and per-property), Navigation Steps, and Forms (form-level rules plus per-control property formulas)
 - **Inline diffs** - See exactly what changed in formulas
 - **Interactive filtering** - Filter by Added/Removed/Modified/Unchanged
@@ -171,13 +171,11 @@ panel automatically; setting `"enable_db": false` hides it regardless.
 
 ## Supported File Types
 
-The tool parses:
+The tool accepts:
 
-- `.driveprojx` - DriveWorks project files (automatically extracted)
-- `project.xml` - Variables, Calculation Tables, Documents
-- `designMaster.xml` - Constants, Special Variables, Lookup Tables
-- `*.tdm` - Team Design Master exports (attribute-based XML format)
-- `componentTasks.xml` - Component Tasks and their rules
+- `.driveprojx` - DriveWorks project files (extracted automatically)
+- Project folders - already-extracted projects
+- `.tdm` - Team Design Master exports
 
 ## Project Structure
 
@@ -186,7 +184,7 @@ dw_compare/
 ├── __init__.py      # Package exports
 ├── __main__.py      # CLI entry point
 ├── models.py        # Data classes (Variable, Constant, etc.)
-├── parsers.py       # XML parsing functions
+├── parsers.py       # Project file parsing
 ├── comparers.py     # Comparison and diff logic
 ├── report.py        # HTML report generation
 └── jsondiff.py      # Structured (JSON) diff output
