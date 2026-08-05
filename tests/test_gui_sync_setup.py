@@ -614,7 +614,8 @@ def test_native_widget_mode_builds_and_toggles(monkeypatch):
     try:
         assert isinstance(app.out_entry, ttk.Entry)
         assert isinstance(app.old_test_btn, ttk.Button)
-        assert isinstance(app.old_find_btn, ttk.Button)
+        assert isinstance(app.old_server_combo, ttk.Combobox)
+        assert not hasattr(app, 'old_find_btn')  # combobox replaces the button
         assert isinstance(app.db_diff_creds_check, ttk.Checkbutton)
         assert isinstance(app.db_pass_entry, ttk.Entry)
         assert app.db_pass_entry.cget('show') == '*'
@@ -667,5 +668,49 @@ def test_find_servers_empty_network_reports_gently(monkeypatch):
                 break
             time.sleep(0.05)
         assert 'No SQL Servers announced themselves' in app.new_test_status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_native_server_combobox_lists_discovered(monkeypatch):
+    from tkinter import ttk
+    from dw_compare import dbsource
+    monkeypatch.setattr(gui_mod, '_NATIVE_WIDGETS', True)
+    monkeypatch.setattr(dbsource, 'discover_servers', lambda timeout=2.0: [
+        {'server': 'KEES-DB', 'host': 'KEES-DB', 'instance': '', 'version': '15.0'},
+        {'server': 'KEES-DB\\STAGING', 'host': 'KEES-DB', 'instance': 'STAGING', 'version': ''},
+    ])
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        assert isinstance(app.old_server_combo, ttk.Combobox)
+        # First open may race the prefetch; wait for the scan, then repopulate.
+        if app._server_scan is not None:
+            app._server_scan.join(timeout=5)
+        app._populate_server_combo('old')
+        values = list(app.old_server_combo['values'])
+        assert 'KEES-DB' in values and 'KEES-DB\\STAGING' in values
+        # Both sides share one cache and one scan.
+        app._populate_server_combo('new')
+        assert 'KEES-DB' in list(app.new_server_combo['values'])
+    finally:
+        root.destroy()
+
+
+def test_help_mentions_db_only_when_enabled():
+    root, app = _make_app()   # flag off
+    try:
+        app._show_help()
+        texts = _dialog_texts(root)
+        assert not any('Database name resolution' in t for t in texts)
+    finally:
+        root.destroy()
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        app._show_help()
+        texts = _dialog_texts(root)
+        assert any('Database name resolution' in t for t in texts)
+        assert any('Passwords are never saved' in t for t in texts)
     finally:
         root.destroy()

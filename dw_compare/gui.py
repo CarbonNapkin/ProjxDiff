@@ -425,6 +425,20 @@ class CompareApp:
              'unfamiliar DriveWorks user names show up there for one-click '
              'triage. Command-line equivalents: --sync, --census, --dashboard.')
 
+        # Only shown when the deployment has opted into the database
+        # surface — everyone else never sees these controls, so no help
+        # text should mention them.
+        if self.db_enabled:
+            heading('Database name resolution (optional)')
+            para('Each side can connect read-only to its DriveWorks group '
+                 'database so captured model and rule changes show real '
+                 'names in the report. Server accepts HOST, HOST\\INSTANCE, '
+                 'or HOST,PORT — the dropdown arrow lists SQL Servers found '
+                 'on your network, and Test connection verifies the settings '
+                 'on the spot. One login usually covers both sides; tick '
+                 '"Different login for the old database" when they differ. '
+                 'Passwords are never saved — enter them each session.')
+
         heading('Private by design')
         para('Everything runs locally; your project files never leave your '
              'machines.')
@@ -568,6 +582,8 @@ class CompareApp:
         frm.pack(fill='both', expand=True)
         self._frm = frm
         self._path_entries = {}
+        self._discovered_servers: list = []
+        self._server_scan: threading.Thread | None = None
         frm.columnconfigure(0, weight=1)
 
         if _NATIVE_WIDGETS:
@@ -603,6 +619,8 @@ class CompareApp:
         # the common case). Feature-flagged with the rest of the DB surface.
         if self.db_enabled:
             self._build_login_bar(frm)
+            if _NATIVE_WIDGETS:
+                self._scan_servers_async()   # prefetch for the combobox arrow
 
         out = tk.Frame(frm, bg=bg)
         out.grid(row=2, column=0, sticky='ew', pady=(10, 0))
@@ -711,13 +729,27 @@ class CompareApp:
         srv = tk.Frame(sec, bg=_PANEL_BG)
         srv.grid(row=2, column=0, sticky='ew', padx=(0, 4))
         srv.columnconfigure(0, weight=1)
-        server_entry = self._make_entry(srv, server_var)
+        if _NATIVE_WIDGETS:
+            # A real combobox: its arrow drops down servers found on the
+            # network (SQL Browser broadcast); typing works as normal.
+            server_entry = ttk.Combobox(
+                srv, textvariable=server_var,
+                postcommand=lambda: self._populate_server_combo(side))
+            server_entry.bind(
+                '<<ComboboxSelected>>',
+                lambda _e: server_var.set('') if server_var.get().startswith('(')
+                else None)
+            setattr(self, f'{side}_server_combo', server_entry)
+        else:
+            # Classic Tk has no combobox; a slim arrow posts the pick menu.
+            server_entry = self._make_entry(srv, server_var)
+            find_btn = self._button(srv, '▾', lambda: self._find_servers(side))
+            find_btn.grid(row=0, column=1, padx=(3, 0))
+            setattr(self, f'{side}_find_btn', find_btn)
         server_entry.grid(row=0, column=0, sticky='ew')
         _Tooltip(server_entry,
-                 lambda: 'HOST, HOST\\INSTANCE, or HOST,PORT — same as in SSMS')
-        find_btn = self._button(srv, 'Find ▾', lambda: self._find_servers(side))
-        find_btn.grid(row=0, column=1, padx=(4, 0))
-        setattr(self, f'{side}_find_btn', find_btn)
+                 lambda: 'HOST, HOST\\INSTANCE, or HOST,PORT — same as in SSMS; '
+                         'the arrow lists servers found on your network')
         sec_entry(dbname_var).grid(row=2, column=1, sticky='ew', padx=(4, 0))
 
         if side == 'old':
@@ -887,6 +919,32 @@ class CompareApp:
 
         self.root.after(80, poll)
         return t
+
+    def _scan_servers_async(self):
+        """Refresh the discovered-servers cache off the UI thread. At most
+        one scan runs at a time; results persist for the combobox to show
+        on its next drop-down. Returns the thread (tests join it)."""
+        if self._server_scan is not None and self._server_scan.is_alive():
+            return self._server_scan
+        from . import dbsource
+
+        def work():
+            found = dbsource.discover_servers()
+            if found:
+                self._discovered_servers = found
+
+        self._server_scan = threading.Thread(target=work, daemon=True)
+        self._server_scan.start()
+        return self._server_scan
+
+    def _populate_server_combo(self, side: str) -> None:
+        """Combobox postcommand (Windows): show the latest scan results
+        instantly and refresh in the background for the next drop-down —
+        opening the arrow never blocks the UI on a network scan."""
+        combo = getattr(self, f'{side}_server_combo')
+        names = [s['server'] for s in self._discovered_servers]
+        combo['values'] = names or ['(scanning the network — reopen in a moment)']
+        self._scan_servers_async()
 
     def _find_servers(self, side: str):
         """Find ▾ — scan the local network for SQL Server instances (the

@@ -15,12 +15,18 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Find ▾ next to each Server field** scans the local network for SQL
-  Server instances (the same broadcast SSMS's server dropdown uses) and
-  fills the field from a pick list. Best-effort by nature: if nothing
-  answers (SQL Browser service off, UDP 1434 blocked) it says so and
-  you type the name instead. Hovering the Server field shows the
-  accepted formats — HOST, HOST\INSTANCE, or HOST,PORT.
+- **The Server field finds servers for you.** On Windows it's a
+  combobox — the drop-down arrow lists SQL Server instances found on
+  your network (the same broadcast SSMS's server dropdown uses), with
+  a background scan so opening it never blocks; on macOS a slim ▾
+  posts the same pick list. Best-effort by nature: if nothing answers
+  (SQL Browser service off, UDP 1434 blocked) you type the name
+  instead. Hovering the field shows the accepted formats — HOST,
+  HOST\INSTANCE, or HOST,PORT.
+- **Help ▸ How to Use grows a database section** — server formats, the
+  finder, Test connection, per-side logins, and the passwords-never-
+  saved rule — shown only on installs that have the database surface
+  enabled.
 - **Nightly sync reports can resolve names too.** Give a sync source its
   group database (`db_server`/`db_database` in the config, per source or
   shared) and that source's nightly HTML reports resolve captured
