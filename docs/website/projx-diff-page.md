@@ -23,8 +23,7 @@ per-section navigator with live change counts sit in a left sidebar, so
 even a large diff reads at a glance. Auto/Light/Dark themes follow your OS
 or your explicit choice. Status colors are colorblind-safe by design, and
 every change is labeled — never color alone. Captured model and model-rule
-changes now appear in the report too, with component and model names
-resolved straight from your DriveWorks group database when you connect one.
+changes now appear in the report too.
 
 **Track your whole project library, automatically.** Point
 Projx Diff at your project shares and it archives every project nightly
