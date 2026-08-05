@@ -22,6 +22,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import Tk, StringVar, BooleanVar, END, DISABLED, NORMAL, filedialog, messagebox
 from tkinter import font as tkfont
+from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
 from ._version import __version__, __author__, __license__
@@ -55,6 +56,13 @@ _SM_MUTED = '#8a94a6'
 _SM_DIVIDER = '#e3e6eb'
 _SM_ACCENT = '#2d6cdf'
 _SM_ACCENT_ACT = '#245bc0'
+
+# On Windows, buttons/entries/checkbuttons render as native themed (ttk)
+# controls — rounded corners on Win11, real focus rings — instead of the
+# flat squared classic-Tk style. macOS keeps classic widgets: ttk on older
+# macOS Tk builds often renders as an empty/black frame (the original
+# reason this app avoids ttk), and classic Tk looks acceptable there.
+_NATIVE_WIDGETS = sys.platform == 'win32'
 
 # Main-window pane palette. Old/new accents match the report's
 # colorblind-safe orange/blue so the whole product reads as one system.
@@ -562,7 +570,20 @@ class CompareApp:
         self._path_entries = {}
         frm.columnconfigure(0, weight=1)
 
+        if _NATIVE_WIDGETS:
+            style = ttk.Style(self.root)
+            try:
+                style.theme_use('vista')
+            except tk.TclError:
+                pass  # non-Windows fallback (native-mode tests on mac/linux)
+            # ttk widgets paint their own background; match the surfaces
+            # they sit on so checkbutton labels don't show a gray patch.
+            style.configure('Panel.TCheckbutton', background=_PANEL_BG)
+            style.configure('Main.TCheckbutton', background=_SM_BG)
+
         def button(parent, text, cmd):
+            if _NATIVE_WIDGETS:
+                return ttk.Button(parent, text=text, command=cmd)
             return tk.Button(parent, text=text, command=cmd, highlightthickness=0,
                              relief='flat', bg='#e6e8ec', activebackground='#dcdfe4',
                              cursor='hand2', padx=10, pady=2)
@@ -587,14 +608,12 @@ class CompareApp:
         out.grid(row=2, column=0, sticky='ew', pady=(10, 0))
         out.columnconfigure(1, weight=1)
         tk.Label(out, text='Save report as:', bg=bg, fg=_SM_TEXT).grid(row=0, column=0, padx=(0, 8))
-        self.out_entry = tk.Entry(out, highlightthickness=1, highlightcolor=_SM_ACCENT,
-                                  relief='solid', bd=1)
+        self.out_entry = self._make_entry(out)
         self.out_entry.grid(row=0, column=1, sticky='ew')
         self._bind_path_display(self.out_entry, self.output_path)
         button(out, 'Save as…', self._pick_output).grid(row=0, column=2, padx=(6, 0))
-        tk.Checkbutton(out, text='Open in browser', variable=self.open_in_browser,
-                       bg=bg, fg=_SM_TEXT, anchor='w', highlightthickness=0,
-                       activebackground=bg, selectcolor='#ffffff').grid(row=0, column=3, padx=(8, 0))
+        self._make_check(out, 'Open in browser', self.open_in_browser,
+                         bg=bg).grid(row=0, column=3, padx=(8, 0))
 
         act = tk.Frame(frm, bg=bg)
         act.grid(row=3, column=0, sticky='ew', pady=(8, 0))
@@ -660,8 +679,7 @@ class CompareApp:
         pick.grid(row=2, column=0, columnspan=2, sticky='ew')
         pick.columnconfigure(0, weight=1)
         var = self.old_path if side == 'old' else self.new_path
-        ent = tk.Entry(pick, highlightthickness=1, highlightcolor=_SM_ACCENT,
-                       relief='solid', bd=1)
+        ent = self._make_entry(pick)
         ent.grid(row=0, column=0, sticky='ew')
         self._button(pick, 'Browse…',
                      lambda: self._pick_file(var, ent, side)).grid(row=0, column=1, padx=(6, 0))
@@ -681,8 +699,7 @@ class CompareApp:
             return tk.Label(sec, text=text, bg=_PANEL_BG, fg=_SM_TEXT, anchor='w')
 
         def sec_entry(v, show=None):
-            return tk.Entry(sec, textvariable=v, highlightthickness=1,
-                            highlightcolor=_SM_ACCENT, relief='solid', bd=1, show=show)
+            return self._make_entry(sec, v, show)
 
         tk.Label(sec, text='DATABASE (OPTIONAL — RESOLVES MODEL/RULE NAMES)',
                  bg=_PANEL_BG, fg=_SM_MUTED, font=('TkDefaultFont', 8, 'bold')).grid(
@@ -691,7 +708,16 @@ class CompareApp:
         dbname_var = self.old_db_database if side == 'old' else self.new_db_database
         sec_label('Server:').grid(row=1, column=0, sticky='w', pady=(2, 1))
         sec_label('Database:').grid(row=1, column=1, sticky='w', padx=(8, 0), pady=(2, 1))
-        sec_entry(server_var).grid(row=2, column=0, sticky='ew', padx=(0, 4))
+        srv = tk.Frame(sec, bg=_PANEL_BG)
+        srv.grid(row=2, column=0, sticky='ew', padx=(0, 4))
+        srv.columnconfigure(0, weight=1)
+        server_entry = self._make_entry(srv, server_var)
+        server_entry.grid(row=0, column=0, sticky='ew')
+        _Tooltip(server_entry,
+                 lambda: 'HOST, HOST\\INSTANCE, or HOST,PORT — same as in SSMS')
+        find_btn = self._button(srv, 'Find ▾', lambda: self._find_servers(side))
+        find_btn.grid(row=0, column=1, padx=(4, 0))
+        setattr(self, f'{side}_find_btn', find_btn)
         sec_entry(dbname_var).grid(row=2, column=1, sticky='ew', padx=(4, 0))
 
         if side == 'old':
@@ -736,11 +762,9 @@ class CompareApp:
                  font=('TkDefaultFont', 8, 'bold')).grid(row=0, column=0, columnspan=2, sticky='w')
 
         def check(text, var):
-            return tk.Checkbutton(inner, text=text, variable=var,
-                                  command=self._apply_windows_auth_visibility,
-                                  bg=_PANEL_BG, fg=_SM_TEXT, anchor='w',
-                                  activebackground=_PANEL_BG, selectcolor='#ffffff',
-                                  highlightthickness=0, cursor='hand2')
+            return self._make_check(inner, text, var,
+                                    cmd=self._apply_windows_auth_visibility,
+                                    bg=_PANEL_BG)
         check('Use Windows Authentication (instead of SQL Server login)',
               self.db_windows_auth).grid(row=1, column=0, sticky='w', pady=(2, 0))
         self.db_diff_creds_check = check('Different login for the old database',
@@ -748,8 +772,7 @@ class CompareApp:
         self.db_diff_creds_check.grid(row=1, column=1, sticky='w', padx=(8, 0), pady=(2, 0))
 
         def bar_entry(v, show=None):
-            return tk.Entry(inner, textvariable=v, highlightthickness=1,
-                            highlightcolor=_SM_ACCENT, relief='solid', bd=1, show=show)
+            return self._make_entry(inner, v, show)
         self.db_user_label = tk.Label(inner, text='SQL username:', bg=_PANEL_BG,
                                       fg=_SM_TEXT, anchor='w')
         self.db_pass_label = tk.Label(inner, text='SQL password:', bg=_PANEL_BG,
@@ -761,6 +784,28 @@ class CompareApp:
         self.db_user_entry.grid(row=3, column=0, sticky='ew', padx=(0, 4))
         self.db_pass_entry.grid(row=3, column=1, sticky='ew', padx=(4, 0))
 
+    def _make_entry(self, parent, var=None, show=None):
+        if _NATIVE_WIDGETS:
+            kw = {}
+            if var is not None:
+                kw['textvariable'] = var
+            if show:
+                kw['show'] = show
+            return ttk.Entry(parent, **kw)
+        return tk.Entry(parent, textvariable=var, highlightthickness=1,
+                        highlightcolor=_SM_ACCENT, relief='solid', bd=1,
+                        show=show or '')
+
+    def _make_check(self, parent, text, var, cmd=None, bg=_SM_BG):
+        if _NATIVE_WIDGETS:
+            kw = {'command': cmd} if cmd else {}
+            style = 'Panel.TCheckbutton' if bg == _PANEL_BG else 'Main.TCheckbutton'
+            return ttk.Checkbutton(parent, text=text, variable=var, style=style, **kw)
+        return tk.Checkbutton(parent, text=text, variable=var, command=cmd,
+                              bg=bg, fg=_SM_TEXT, anchor='w', activebackground=bg,
+                              selectcolor='#ffffff', highlightthickness=0,
+                              cursor='hand2')
+
     def _bind_path_display(self, ent, var) -> None:
         """Editable Entry showing a middle-ellipsized view of var while
         unfocused; focusing swaps in the real value for editing, and edits
@@ -768,7 +813,7 @@ class CompareApp:
         always holds the real, untruncated value."""
         disp = StringVar()
         ent.configure(textvariable=disp)
-        efont = tkfont.Font(font=ent.cget('font'))
+        efont = tkfont.Font(font=ent.cget('font') or 'TkTextFont')
         self._path_entries[ent] = (disp, var)
 
         def refresh(*_a):
@@ -842,6 +887,57 @@ class CompareApp:
 
         self.root.after(80, poll)
         return t
+
+    def _find_servers(self, side: str):
+        """Find ▾ — scan the local network for SQL Server instances (the
+        SQL Browser broadcast SSMS's dropdown uses) and offer the results
+        as a picker menu. Best-effort: many networks block it, and failure
+        just says so. Returns the worker thread (tests join it)."""
+        from . import dbsource
+        btn = getattr(self, f'{side}_find_btn')
+        status = getattr(self, f'{side}_test_status')
+        btn.configure(state=DISABLED)
+        status.configure(text='Scanning for SQL Servers…', fg=_SM_MUTED)
+        result = {}
+
+        def work():
+            result['servers'] = dbsource.discover_servers()
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+
+        def poll():
+            if t.is_alive():
+                self.root.after(100, poll)
+                return
+            self._show_found_servers(side, result.get('servers') or [])
+
+        self.root.after(100, poll)
+        return t
+
+    def _show_found_servers(self, side: str, servers: list) -> None:
+        btn = getattr(self, f'{side}_find_btn')
+        status = getattr(self, f'{side}_test_status')
+        btn.configure(state=NORMAL)
+        if not servers:
+            status.configure(
+                text='No SQL Servers announced themselves on this network — '
+                     'the SQL Browser service may be off. Type the server as '
+                     'HOST, HOST\\INSTANCE, or HOST,PORT.', fg=_WARN_FG)
+            return
+        status.configure(text=f'Found {len(servers)} — pick from the list.',
+                         fg=_SM_MUTED)
+        var = self.old_db_server if side == 'old' else self.new_db_server
+        menu = tk.Menu(self.root, tearoff=0)
+        for s in servers:
+            label = s['server'] + (f"   (SQL {s['version']})" if s.get('version') else '')
+            menu.add_command(label=label, command=lambda v=s['server']: var.set(v))
+        self._servers_menu = menu
+        if btn.winfo_viewable():  # hidden window (tests): menu built, not posted
+            try:
+                menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+            finally:
+                menu.grab_release()
 
     def _show_test_result(self, side: str, ok: bool, server: str,
                           database: str, err: str) -> None:

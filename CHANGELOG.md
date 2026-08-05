@@ -4,6 +4,24 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-08-05
+
+### Changed
+
+- **Native controls on Windows.** Buttons, text fields, and checkboxes
+  now render through the Windows theme engine — rounded corners on
+  Windows 11, real focus states — instead of the flat squared custom
+  style. macOS keeps the classic widgets, which render reliably there.
+
+### Added
+
+- **Find ▾ next to each Server field** scans the local network for SQL
+  Server instances (the same broadcast SSMS's server dropdown uses) and
+  fills the field from a pick list. Best-effort by nature: if nothing
+  answers (SQL Browser service off, UDP 1434 blocked) it says so and
+  you type the name instead. Hovering the Server field shows the
+  accepted formats — HOST, HOST\INSTANCE, or HOST,PORT.
+
 ## [1.6.0] - 2026-08-05
 
 ### Changed

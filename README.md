@@ -159,8 +159,10 @@ database (or `pyodbc` missing) the report simply shows raw GUIDs.
 
 In the GUI, each side's pane has its own Database section with a **Test
 connection** button (a read-only probe that confirms the settings or
-explains what failed), and a checkbox reveals a separate login for the
-old database when the two sides differ. The whole database surface is
+explains what failed) and a **Find ▾** button that lists SQL Server
+instances announcing themselves on the local network; a checkbox
+reveals a separate login for the old database when the two sides
+differ. Server names accept `HOST`, `HOST\INSTANCE`, or `HOST,PORT`. The whole database surface is
 off by default — most installs have no group database and never need
 to see it.
 The app creates its settings file at `~/.projxdiff`

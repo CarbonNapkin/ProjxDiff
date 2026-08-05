@@ -266,3 +266,42 @@ def test_classify_connect_error_actionable_lines(raw, expect):
 def test_classify_connect_error_unknown_passes_through():
     from dw_compare.dbsource import _classify_connect_error
     assert _classify_connect_error(Exception('weird failure XYZ')) == 'weird failure XYZ'
+
+
+# ---------- LAN discovery (SSRP parsing; the network part fails soft) ----------
+
+def _ssrp(payload: str) -> bytes:
+    body = payload.encode('ascii')
+    return b'\x05' + len(body).to_bytes(2, 'little') + body
+
+
+def test_parse_ssrp_default_and_named_instances():
+    from dw_compare.dbsource import _parse_ssrp
+    seen = set()
+    out = _parse_ssrp(_ssrp(
+        'ServerName;KEES-DB;InstanceName;MSSQLSERVER;IsClustered;No;'
+        'Version;15.0.4043.16;tcp;1433;;'
+        'ServerName;KEES-DB;InstanceName;STAGING;IsClustered;No;'
+        'Version;15.0.4043.16;;'), seen)
+    assert [d['server'] for d in out] == ['KEES-DB', 'KEES-DB\\STAGING']
+    assert out[0]['version'] == '15.0.4043.16'
+    # Duplicate datagram (broadcast answers can repeat) adds nothing.
+    assert _parse_ssrp(_ssrp('ServerName;KEES-DB;InstanceName;MSSQLSERVER;;'), seen) == []
+
+
+def test_parse_ssrp_rejects_garbage():
+    from dw_compare.dbsource import _parse_ssrp
+    assert _parse_ssrp(b'', set()) == []
+    assert _parse_ssrp(b'\x04\x00\x00junk', set()) == []
+    assert _parse_ssrp(_ssrp(';;;;'), set()) == []
+
+
+def test_discover_servers_never_raises(monkeypatch):
+    import socket as socket_mod
+    from dw_compare import dbsource
+
+    def boom(*a, **k):
+        raise OSError('network down')
+
+    monkeypatch.setattr(socket_mod, 'socket', boom)
+    assert dbsource.discover_servers(timeout=0.01) == []

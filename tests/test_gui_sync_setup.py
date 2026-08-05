@@ -600,3 +600,72 @@ def test_path_display_ellipsizes_but_variable_keeps_full_value():
         assert app.old_entry.get() != ''    # something is displayed
     finally:
         root.destroy()
+
+
+# ---------- native (ttk) widget mode and the server finder ----------
+
+def test_native_widget_mode_builds_and_toggles(monkeypatch):
+    # Windows runs this path for real; here the vista theme is absent so
+    # the style falls back, but construction and visibility must work.
+    from tkinter import ttk
+    monkeypatch.setattr(gui_mod, '_NATIVE_WIDGETS', True)
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        assert isinstance(app.out_entry, ttk.Entry)
+        assert isinstance(app.old_test_btn, ttk.Button)
+        assert isinstance(app.old_find_btn, ttk.Button)
+        assert isinstance(app.db_diff_creds_check, ttk.Checkbutton)
+        assert isinstance(app.db_pass_entry, ttk.Entry)
+        assert app.db_pass_entry.cget('show') == '*'
+        app.db_diff_creds.set(True)
+        app.db_windows_auth.set(True)
+        app._apply_windows_auth_visibility()   # must not raise on ttk widgets
+        app.old_test_btn.configure(state='disabled')
+        app.old_test_btn.configure(state='normal')
+    finally:
+        root.destroy()
+
+
+def test_find_servers_populates_picker(monkeypatch):
+    from dw_compare import dbsource
+    monkeypatch.setattr(dbsource, 'discover_servers', lambda timeout=2.0: [
+        {'server': 'KEES-DB', 'host': 'KEES-DB', 'instance': '', 'version': '15.0.4043.16'},
+        {'server': 'KEES-DB\\STAGING', 'host': 'KEES-DB', 'instance': 'STAGING', 'version': ''},
+    ])
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        import time
+        t = app._find_servers('old')
+        t.join(timeout=5)
+        for _ in range(50):
+            root.update()
+            if app.old_find_btn.cget('state') != 'disabled':
+                break
+            time.sleep(0.05)
+        menu = app._servers_menu
+        assert 'KEES-DB' in menu.entrycget(0, 'label')
+        menu.invoke(1)   # pick the named instance
+        assert app.old_db_server.get() == 'KEES-DB\\STAGING'
+    finally:
+        root.destroy()
+
+
+def test_find_servers_empty_network_reports_gently(monkeypatch):
+    from dw_compare import dbsource
+    monkeypatch.setattr(dbsource, 'discover_servers', lambda timeout=2.0: [])
+    gui_mod._save_setting('enable_db', True)
+    root, app = _make_app()
+    try:
+        import time
+        t = app._find_servers('new')
+        t.join(timeout=5)
+        for _ in range(50):
+            root.update()
+            if 'Scanning' not in app.new_test_status.cget('text'):
+                break
+            time.sleep(0.05)
+        assert 'No SQL Servers announced themselves' in app.new_test_status.cget('text')
+    finally:
+        root.destroy()

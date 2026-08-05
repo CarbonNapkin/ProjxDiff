@@ -130,6 +130,64 @@ def available_drivers() -> list:
         return []
 
 
+def _parse_ssrp(data: bytes, seen: set) -> list:
+    """Parse one SQL Browser (SSRP) response datagram into instance dicts.
+    Payload after the 3-byte header is semicolon-paired:
+    ServerName;HOST;InstanceName;INST;IsClustered;No;Version;16.0.1000.6;tcp;1433;;
+    """
+    found = []
+    if len(data) < 4 or data[0] != 0x05:
+        return found
+    text = data[3:].decode('ascii', 'replace')
+    for chunk in text.split(';;'):
+        fields = chunk.strip(';').split(';')
+        pairs = {fields[i].lower(): fields[i + 1]
+                 for i in range(0, len(fields) - 1, 2)}
+        host = pairs.get('servername')
+        if not host:
+            continue
+        inst = pairs.get('instancename', '')
+        server = host if inst.upper() in ('', 'MSSQLSERVER') else f'{host}\\{inst}'
+        if server in seen:
+            continue
+        seen.add(server)
+        found.append({'server': server, 'host': host, 'instance': inst,
+                      'version': pairs.get('version', '')})
+    return found
+
+
+def discover_servers(timeout: float = 2.0) -> list:
+    """Best-effort LAN discovery of SQL Server instances via the SQL
+    Browser service (SSRP — a UDP 1434 broadcast, the same mechanism
+    behind SSMS's server dropdown). Returns a list of
+    {'server': 'HOST' or 'HOST\\INSTANCE', 'host', 'instance', 'version'}.
+    Empty on any failure: the Browser service being disabled or UDP 1434
+    being firewalled is common and not an error. Read-only and passive
+    beyond the single broadcast packet."""
+    import socket
+    import time
+    found: list = []
+    seen: set = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(0.5)
+            sock.sendto(b'\x02', ('255.255.255.255', 1434))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    data, _addr = sock.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                found.extend(_parse_ssrp(data, seen))
+        finally:
+            sock.close()
+    except Exception:
+        pass
+    return found
+
+
 def pick_driver() -> str | None:
     have = set(available_drivers())
     for d in _DRIVER_CANDIDATES:
