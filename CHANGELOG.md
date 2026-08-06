@@ -4,6 +4,17 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Repair scheduled task** in Tools ▸ Manage Nightly Sync (Windows):
+  re-registers the "ProjxDiff Nightly Sync" task to run the installed
+  app — nightly, as SYSTEM — for deployments whose task still points at
+  an old copy of the tool. Triggers one administrator (UAC) approval;
+  the dialog also shows the exact command for running it by hand in an
+  elevated terminal.
+
 ## [1.7.0] - 2026-08-05
 
 ### Changed

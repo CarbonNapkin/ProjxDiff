@@ -1494,6 +1494,11 @@ class _SyncManager:
             tk.Button(bar, text='Add environment group…', command=self._add_group,
                       bg='#e6e8ec', relief='flat', padx=14, pady=6,
                       cursor='hand2').pack(side='left')
+            if sys.platform == 'win32':
+                tk.Button(bar, text='Repair scheduled task…',
+                          command=lambda: self._offer_schedule(repair=True),
+                          bg='#e6e8ec', relief='flat', padx=14, pady=6,
+                          cursor='hand2').pack(side='left', padx=(8, 0))
         if self._app is not None:
             tk.Button(bar, text='Switch config…', command=self._switch_config,
                       bg=_SM_BG, fg=_SM_MUTED, relief='flat', bd=0,
@@ -1898,12 +1903,64 @@ class _SyncManager:
             return False
         return str(self.config_path) not in _setting_list(_load_settings(), 'schedule_offered')
 
-    def _offer_schedule(self) -> None:
-        offered = _setting_list(_load_settings(), 'schedule_offered')
-        _save_setting('schedule_offered', offered + [str(self.config_path)])
+    _TASK_NAME = 'ProjxDiff Nightly Sync'
 
-        top, body = _styled_dialog(self.top, 'Run Nightly',
-                                   'Register a Windows scheduled task for the sync')
+    @staticmethod
+    def _repair_task_line(command: str, time_str: str) -> str:
+        """The schtasks line the elevated repair runs: recreate the task in
+        place (/F) — nightly, as SYSTEM, highest privileges — pointing at
+        the given sync command. Embedded quotes use the \\" form schtasks
+        expects inside /TR."""
+        return ('schtasks /Create /F /SC DAILY /TN "ProjxDiff Nightly Sync" '
+                f'/ST {time_str} /RU SYSTEM /RL HIGHEST '
+                '/TR "' + command.replace('"', '\\"') + '"')
+
+    def _register_task_elevated(self, time_str: str) -> tuple:
+        """Run the repair line elevated (one UAC prompt — SYSTEM tasks can't
+        be modified otherwise) and verify the task now points at this
+        executable. Returns (ok, human message)."""
+        if sys.platform != 'win32':
+            return False, 'Scheduled tasks are a Windows feature.'
+        line = self._repair_task_line(self._sync_command(), time_str)
+        script = Path(tempfile.gettempdir()) / 'projxdiff_repair_task.cmd'
+        script.write_text('@echo off\r\n' + line + '\r\nexit /b %errorlevel%\r\n',
+                          encoding='utf-8')
+        try:
+            proc = subprocess.run(
+                ['powershell', '-NoProfile', '-Command',
+                 f"$p = Start-Process -FilePath '{script}' -Verb RunAs -Wait -PassThru; "
+                 'exit $p.ExitCode'],
+                capture_output=True, text=True, timeout=180)
+        except Exception as e:
+            return False, f'Could not launch the elevated repair: {e}'
+        if proc.returncode != 0:
+            return False, ('Repair was declined or failed. You can also run the '
+                           'command from the box below in an Administrator terminal.')
+        query = subprocess.run(['schtasks', '/Query', '/TN', self._TASK_NAME,
+                                '/V', '/FO', 'LIST'], capture_output=True, text=True)
+        if sys.executable.lower() in (query.stdout or '').lower():
+            return True, (f'Task repaired — runs nightly at {time_str} as SYSTEM, '
+                          'using this installed app.')
+        return True, 'Repair reported success (not verifiable from this session).'
+
+    def _offer_schedule(self, repair: bool = False) -> None:
+        if not repair:
+            offered = _setting_list(_load_settings(), 'schedule_offered')
+            _save_setting('schedule_offered', offered + [str(self.config_path)])
+
+        top, body = _styled_dialog(
+            self.top,
+            'Repair Scheduled Task' if repair else 'Run Nightly',
+            'Point the nightly task at this app' if repair
+            else 'Register a Windows scheduled task for the sync')
+        if repair:
+            tk.Label(body,
+                     text=('Re-registers "ProjxDiff Nightly Sync" to run this '
+                           'installed app nightly as SYSTEM — use this when the '
+                           'task still points at an old copy of the tool. '
+                           'Windows will ask for administrator approval.'),
+                     bg=_SM_CARD, fg=_SM_MUTED, anchor='w', wraplength=460,
+                     justify='left').pack(fill='x', pady=(0, 8))
         row = tk.Frame(body, bg=_SM_CARD)
         row.pack(fill='x')
         tk.Label(row, text='Run nightly at', bg=_SM_CARD, fg=_SM_TEXT).pack(side='left')
@@ -1918,6 +1975,10 @@ class _SyncManager:
             t = time_var.get().strip()
             if not re.fullmatch(r'[0-2]?\d:[0-5]\d', t):
                 status.configure(text='Time must be HH:MM (24-hour).', fg='#c0392b')
+                return
+            if repair:
+                ok, msg = self._register_task_elevated(t)
+                status.configure(text=msg, fg='#1b7a3d' if ok else '#c0392b')
                 return
             try:
                 proc = subprocess.run(
@@ -1934,18 +1995,22 @@ class _SyncManager:
                 status.configure(text=(proc.stderr or proc.stdout or 'schtasks failed').strip(),
                                  fg='#c0392b')
 
-        tk.Button(row, text='Register scheduled task', command=_register,
+        tk.Button(row, text='Repair task' if repair else 'Register scheduled task',
+                  command=_register,
                   bg=_SM_ACCENT, fg='#ffffff', activebackground=_SM_ACCENT_ACT,
                   activeforeground='#ffffff', relief='flat', padx=14, pady=3,
                   cursor='hand2', font=('TkDefaultFont', 10, 'bold')).pack(
             side='left', padx=(8, 0))
         status.pack(fill='x', pady=(8, 0))
 
-        tk.Label(body, text='Or register it yourself (e.g. on a server):',
+        tk.Label(body, text='Or run it yourself in an Administrator terminal:'
+                 if repair else 'Or register it yourself (e.g. on a server):',
                  bg=_SM_CARD, fg=_SM_MUTED, anchor='w').pack(fill='x', pady=(12, 2))
         manual = tk.Entry(body, highlightthickness=1, relief='solid', bd=1)
-        manual.insert(0, 'schtasks /Create /SC DAILY /TN "ProjxDiff Nightly Sync" '
-                         f'/ST 02:00 /TR {self._sync_command()}')
+        manual.insert(0, self._repair_task_line(self._sync_command(), '02:00')
+                      if repair else
+                      'schtasks /Create /SC DAILY /TN "ProjxDiff Nightly Sync" '
+                      f'/ST 02:00 /TR {self._sync_command()}')
         manual.configure(state='readonly')
         manual.pack(fill='x')
 

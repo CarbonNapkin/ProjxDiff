@@ -714,3 +714,24 @@ def test_help_mentions_db_only_when_enabled():
         assert any('Passwords are never saved' in t for t in texts)
     finally:
         root.destroy()
+
+
+# ---------- scheduled-task repair ----------
+
+def test_repair_task_line_quoting():
+    line = gui_mod._SyncManager._repair_task_line(
+        '"C:\\Program Files\\Projx Diff\\ProjxDiff.exe" --sync "C:\\ProjxArchive\\config.json"',
+        '02:00')
+    assert line.startswith('schtasks /Create /F /SC DAILY /TN "ProjxDiff Nightly Sync" '
+                           '/ST 02:00 /RU SYSTEM /RL HIGHEST /TR "')
+    # Inner quotes escaped the way schtasks /TR requires.
+    assert '\\"C:\\Program Files\\Projx Diff\\ProjxDiff.exe\\" --sync' in line
+    assert line.endswith('\\"C:\\ProjxArchive\\config.json\\""')
+
+
+def test_register_task_elevated_is_windows_only():
+    mgr = SimpleNamespace(_sync_command=lambda: 'x',
+                          _repair_task_line=gui_mod._SyncManager._repair_task_line)
+    ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
+    assert ok is False
+    assert 'Windows' in msg
