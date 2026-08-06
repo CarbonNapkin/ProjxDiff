@@ -1545,6 +1545,7 @@ class _SyncManager:
             '<MouseWheel>', lambda e: canvas.yview_scroll(int(-e.delta / 120), 'units')))
         canvas.bind('<Leave>', lambda _e: canvas.unbind_all('<MouseWheel>'))
 
+        self._canvas = canvas
         self._table = table
         # Clickable header row (click to sort, click again to reverse) + divider.
         self._header_labels: list = []
@@ -1733,6 +1734,15 @@ class _SyncManager:
         for i, r in enumerate(rows):
             for col, widget in enumerate(r['cells']):
                 widget.grid(row=i + 2, column=col, sticky='w', padx=10, pady=4)
+
+        # Filtering re-grids from the top, so a viewport left scrolled down
+        # would show empty space below a short result set — looking exactly
+        # like "the filter found nothing". Always snap back to the top.
+        canvas = getattr(self, '_canvas', None)
+        if canvas is not None:
+            canvas.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox('all'))
+            canvas.yview_moveto(0.0)
 
         self._update_count(len(rows), len(self._rows))
         arrow = ' ▼' if self._sort_desc else ' ▲'

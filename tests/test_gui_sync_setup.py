@@ -735,3 +735,40 @@ def test_register_task_elevated_is_windows_only():
     ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
     assert ok is False
     assert 'Windows' in msg
+
+
+def test_filter_change_scrolls_back_to_top(tmp_path):
+    """REGRESSION: filtering re-grids from row 0, so a viewport left
+    scrolled down showed blank space under a short result set — which
+    reads as 'the filter found nothing'."""
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        from dw_compare import census as census_mod
+        cfg_path = sync_mod.init_site(tmp_path / 'site')
+        src = tmp_path / 'Projects'
+        for i in range(25):
+            _write_projx(src / f'Proj{i:02d}.driveprojx')
+        cfg = gui_mod._load_manager_config(cfg_path)
+        cpath = census_mod.census_path(cfg)
+        mgr = gui_mod._SyncManager(root, cfg, cpath,
+                                   census_mod.load_census(cpath), config_path=cfg_path)
+        mgr._apply_add_group('prod', str(src))
+        mgr.proj_vars['prod/Proj00'].set('Track')
+        root.update_idletasks()
+
+        mgr._canvas.yview_moveto(1.0)     # user scrolled to the bottom
+        root.update_idletasks()
+        assert mgr._canvas.yview()[0] > 0.0
+
+        mgr._set_disp_filter('Track')      # one row survives
+        root.update_idletasks()
+        assert mgr._canvas.yview()[0] == 0.0   # snapped back into view
+        shown = [r for r in mgr._rows if r['cells'][0].grid_info()]
+        assert [r['title'] for r in shown] == ['Proj00']
+    finally:
+        root.destroy()
