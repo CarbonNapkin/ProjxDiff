@@ -52,6 +52,11 @@ COPY_ATTEMPTS = 3
 COPY_RETRY_DELAY_S = 10
 LOCK_STALE_S = 6 * 3600
 
+# DriveWorks Administrator drops a "<stem>.~driveproj" sidecar beside a project
+# for as long as it has it open. Confirmed on a real 22.2 session: the sidecar
+# appears with the project and is renamed alongside it.
+PROJECT_LOCK_SUFFIX = '.~driveproj'
+
 
 # ---------------------------------------------------------------- config ----
 
@@ -75,6 +80,19 @@ DEFAULTS = {
     'dashboard': True,
     'owners': {},
     'census_path': '',
+    # Rebuild guard (see sync_one): a project whose element overlap with its
+    # archived copy is at or below this is not the same project any more, it
+    # is a fresh build wearing the old name. Only applied once the archived
+    # copy has at least rebuild_min_elements, so small or near-empty projects
+    # -- where a couple of shared defaults swing the ratio -- never trip it.
+    'rebuild_similarity': 0.05,
+    'rebuild_min_elements': 25,
+    # A project open in Administrator is deferred (see _triage), but a session
+    # that exits uncleanly leaves its lock behind and would defer that project
+    # forever. Past this age the lock is treated as abandoned and the project
+    # syncs anyway -- safe, because the sync only ever reads the file. 0
+    # disables the ageing and defers for as long as any lock is present.
+    'lock_stale_hours': 6,
     # Accepted for back-compat with pre-1.2.0 configs; the engine now lives
     # inside the dw_compare package so no path bootstrap is needed.
     'tool_repo': '',
@@ -244,6 +262,54 @@ def find_projects(source_dir: Path, recursive: bool,
             continue
         out.append(p)
     return sorted(out)
+
+
+def project_lock(zip_path: Path):
+    """(holder, age_seconds) while Administrator holds this project open,
+    else None.
+
+    `holder` is the "user|machine" DriveWorks writes into the sidecar (13-28
+    bytes on a real share; it carries no project data, so there is nothing to
+    recover from it and nothing lost by ignoring it). Its value to us is
+    diagnostic only: an abandoned lock names whoever left it behind.
+
+    We never delete these. The sidecar is what stops a second person opening
+    the project, and on a shared site it usually belongs to another user on
+    another machine -- removing it risks two concurrent editors and a lost
+    afternoon, which is a far worse outcome than a deferred sync."""
+    lock = zip_path.with_suffix(PROJECT_LOCK_SUFFIX)
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        holder = lock.read_text(encoding='utf-8', errors='replace').strip()
+    except OSError:
+        holder = ''
+    return holder, age
+
+
+# Every dict on DWProject that holds diffable, name-keyed elements. Component
+# placements are deliberately absent: they are keyed by GUID and churn on
+# re-save, which would drag the overlap ratio down on an unchanged project.
+_ELEMENT_COLLECTIONS = (
+    'variables', 'constants', 'calc_tables', 'component_tasks', 'documents',
+    'lookup_tables', 'spec_macros', 'nav_steps', 'data_tables', 'forms',
+)
+
+
+def _element_keys(proj) -> set:
+    """The identity of every element in a project, namespaced by collection.
+
+    Comparing two of these answers "is this the same project?" independently
+    of the filename, which is the one thing a .driveprojx does not record --
+    DWProjectName is only stamped with the filename at each save, so it is
+    stale after a rename and useless after the next save."""
+    keys = set()
+    for attr in _ELEMENT_COLLECTIONS:
+        for k in (getattr(proj, attr, None) or {}):
+            keys.add(f'{attr}:{k}')
+    return keys
 
 
 def copy_with_retries(src: Path, dst: Path) -> None:
@@ -499,6 +565,31 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
 
     old_proj = load_project(repo_dir)
     new_proj = load_project(new_dir)
+
+    # A project deleted and rebuilt under the same name keeps its archive
+    # directory, so is_new stays False and the diff below would compare the
+    # rebuild against a stranger -- reporting every element of the old project
+    # as removed and every element of the new one as added, which is exactly
+    # the metrics explosion the is_new branch above exists to prevent. Near-zero
+    # overlap means these are not the same project: re-baseline instead.
+    old_keys, new_keys = _element_keys(old_proj), _element_keys(new_proj)
+    union = old_keys | new_keys
+    overlap = len(old_keys & new_keys) / len(union) if union else 1.0
+    if (len(old_keys) >= cfg['rebuild_min_elements']
+            and overlap <= cfg['rebuild_similarity']):
+        log.warning('[REBUILT] %s -- only %.1f%% element overlap with the '
+                    'archived copy (%d -> %d elements); re-baselining instead '
+                    'of diffing against a stranger',
+                    key, overlap * 100, len(old_keys), len(new_keys))
+        if dry_run:
+            return 'rebuilt'
+        shutil.rmtree(repo_dir)
+        shutil.copytree(new_dir, repo_dir)
+        commit_project(repo, name, f'{name}: rebuilt from scratch, re-baselined '
+                                   f'(nightly sync {run_date})', author)
+        record_project_event(conn, run_date, name, owner, 'rebuilt', source)
+        return 'rebuilt'
+
     diff = build_diff(old_proj, new_proj, f'{name} (previous)', f'{name} (current)')
     s = diff['summary']
     log.info('[CHANGED] %s: +%d -%d ~%d', key, s['added'], s['removed'], s['modified'])
@@ -574,15 +665,18 @@ def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
 
 
 def _triage(zips: list, source_dir: Path, census: dict, errors: list,
-            source: str = '') -> tuple:
+            source: str = '', lock_stale_s: float = 0) -> tuple:
     """Apply census dispositions to the discovered files.
 
-    Returns (to_sync, ignored_count, conflicts). Grouping by project name: a
-    lone file whose path moved updates the census entry; multiple files
+    Returns (to_sync, ignored_count, conflicts, deferred). Grouping by project
+    name: a lone file whose path moved updates the census entry; multiple files
     sharing a name sync only the census-registered path (or the first, if
     none registered) — the rest are recorded as conflicts for the attention
     panel and as run errors (back-compat with the pre-census duplicate
-    handling)."""
+    handling). Projects open in Administrator go to `deferred`: still present
+    on the share, just not worth archiving mid-edit. A lock older than
+    `lock_stale_s` is treated as abandoned and its project synced anyway, so a
+    session that died without cleaning up cannot defer a project forever."""
     by_name = {}
     for z in zips:
         by_name.setdefault(z.stem, []).append(z)
@@ -590,6 +684,7 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list,
     to_sync = []
     ignored = 0
     conflicts = []
+    deferred = []
     for name in sorted(by_name):
         key = census_key(source, name)
         group = sorted(by_name[name])
@@ -617,9 +712,24 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list,
         if entry.get('disposition') == 'ignore':
             ignored += 1
             continue
+        held = project_lock(chosen)
+        if held is not None:
+            holder, age = held
+            who = f'{holder}, ' if holder else ''
+            if 0 < lock_stale_s <= age:
+                log.warning('[STALE LOCK] %s -- lock (%s%.1fh old) looks '
+                            'abandoned; syncing anyway and leaving the lock '
+                            'file alone for DriveWorks to clear',
+                            key, who, age / 3600)
+            else:
+                log.warning('[OPEN] %s -- open in DriveWorks Administrator '
+                            '(%s%.1fh); deferred to the next run',
+                            key, who, age / 3600)
+                deferred.append(chosen)
+                continue
         to_sync.append(chosen)
 
-    return to_sync, ignored, conflicts
+    return to_sync, ignored, conflicts, deferred
 
 
 def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
@@ -638,11 +748,19 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
         for rel, pat in sorted(excluded):
             log.info('  excluded: %s  [matched "%s"]', rel, pat)
 
-    to_sync, ignored, conflicts = _triage(zips, scfg['source_dir'], census,
-                                          errors, sname)
+    to_sync, ignored, conflicts, deferred = _triage(
+        zips, scfg['source_dir'], census, errors, sname,
+        lock_stale_s=cfg['lock_stale_hours'] * 3600)
     if ignored:
         log.info('[%s] %d project(s) skipped as census-ignored', label, ignored)
-    seen = {z.stem for z in to_sync}
+    if deferred:
+        log.info('[%s] %d project(s) deferred as open in Administrator',
+                 label, len(deferred))
+        counts['deferred'] += len(deferred)
+    # Deferred projects are still on the share, so they belong in `seen`:
+    # without this a project that happened to be open at sync time would be
+    # recorded as removed and, once closed, re-added as new.
+    seen = {z.stem for z in to_sync} | {z.stem for z in deferred}
 
     staging_root = Path(tempfile.mkdtemp(prefix='projx_sync_'))
     group_db = None if dry_run else open_group_db(scfg)
@@ -707,7 +825,8 @@ def run(cfg: dict, dry_run: bool) -> int:
             if healed:
                 log.info('healed %d metrics row(s) with newly mapped identities', healed)
 
-        counts = {'changed': 0, 'new': 0, 'unchanged': 0}
+        counts = {'changed': 0, 'new': 0, 'unchanged': 0,
+                  'rebuilt': 0, 'deferred': 0}
         errors = []
         all_conflicts = []
         total_found = 0
@@ -771,8 +890,10 @@ def run(cfg: dict, dry_run: bool) -> int:
                         log.warning('[%s] git push failed (sync itself succeeded): %s',
                                     sname or 'source', proc.stderr.strip())
 
-        log.info('done: %d changed, %d new, %d unchanged, %d error(s)%s',
-                 counts['changed'], counts['new'], counts['unchanged'], len(errors),
+        log.info('done: %d changed, %d new, %d rebuilt, %d unchanged, '
+                 '%d deferred, %d error(s)%s',
+                 counts['changed'], counts['new'], counts['rebuilt'],
+                 counts['unchanged'], counts['deferred'], len(errors),
                  ' [dry run]' if dry_run else '')
         return 1 if errors else 0
     finally:

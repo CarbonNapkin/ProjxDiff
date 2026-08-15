@@ -4,6 +4,31 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A rebuilt project is no longer diffed against a stranger.** Deleting a
+  project and recreating it under the same name kept the old archive
+  directory, so the nightly sync treated the rebuild as an edit and reported
+  every element of the old project as removed and every element of the new
+  one as added — a one-off explosion in the work metrics, the exact thing the
+  first-appearance path already guards against. The sync now compares element
+  identity against the archived copy; at or below `rebuild_similarity`
+  (default 5%, applied once the archive holds `rebuild_min_elements`, default
+  25) the project is re-baselined and recorded as `rebuilt` instead.
+
+### Added
+
+- **Projects open in DriveWorks Administrator are deferred.** A project with
+  a `<name>.~driveproj` lock beside it is skipped for that run rather than
+  archived mid-edit, and is not mistaken for a project that vanished from the
+  share. Lock files are never deleted: the sidecar holds no project data
+  (just `user|machine`), but it is what prevents a second person opening the
+  project, and on a shared site it usually belongs to another user on another
+  machine. Locks older than `lock_stale_hours` (default 6, `0` to disable)
+  are treated as abandoned so an unclean exit cannot defer a project forever.
+
 ## [1.7.1] - 2026-08-06
 
 ### Fixed

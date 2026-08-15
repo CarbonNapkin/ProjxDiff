@@ -26,12 +26,27 @@ exe is windowed, so there is no console output; everything goes to
 2. Applies the **census** (see below): ignored projects are skipped; new
    projects are auto-registered as *pending* and sync normally; same-name
    collisions sync only the registered path and flag the other file.
+   A project open in DriveWorks Administrator (it has a `<name>.~driveproj`
+   lock beside it) is **deferred** to the next run rather than archived
+   mid-edit. The lock file is never deleted — it is what stops a second
+   person opening the project, and it usually belongs to another user on
+   another machine. A lock older than `lock_stale_hours` (default 6) is
+   treated as abandoned and the project syncs anyway, so a session that
+   exited uncleanly cannot defer a project forever. Set it to `0` to defer
+   for as long as any lock is present.
 3. Copies each file to local staging (3 attempts, 10s apart) and extracts it.
 4. Compares extracted content (by file hash) against the archive repo:
    - **Unchanged** — nothing happens. No commit, no rows, no reports.
    - **New** — added to the archive with a `<name>: added to archive` commit
      and a single project-level "added" event (never diffed against nothing,
      which would poison the metrics).
+   - **Rebuilt** — the file shares a name with the archived copy but almost
+     none of its content (overlap at or below `rebuild_similarity`, default
+     5%, once the archived copy has at least `rebuild_min_elements`, default
+     25). That is a project deleted and rebuilt under its old name, not an
+     edit, so it is re-baselined with a `rebuilt` event instead of being
+     diffed against its predecessor — which would report every element of
+     both projects as churn.
    - **Changed** — a semantic diff is built; HTML + JSON reports land in
      `data_dir/reports/<date>/`; per-category counts and per-element rows are
      inserted into `data_dir/metrics.sqlite`; the new state is committed as

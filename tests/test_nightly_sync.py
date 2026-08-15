@@ -8,9 +8,11 @@ once.
 """
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -356,3 +358,114 @@ def test_dry_run_never_opens_group_db(site, monkeypatch):
 
     monkeypatch.setattr(sync_mod, 'open_group_db', boom)
     assert _run(site, dry_run=True) == 0
+
+
+# ------------------------------------------------- rebuild / open guards ----
+
+def test_rebuilt_project_is_rebaselined_not_diffed_against_a_stranger(site):
+    """Delete-and-rebuild under the same name keeps the archive directory, so
+    is_new stays False. Without the guard the rebuild is diffed against the
+    project it replaced and every element of both lands in the metrics."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'Old{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    # Same filename, entirely different contents: not an edit, a new project.
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'New{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma' ORDER BY id")]
+        assert statuses == ['added', 'rebuilt']
+        # The whole point: no 30-removed/30-added explosion in the work metrics.
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] == 0
+
+    archived = (site['repo'] / 'Gamma' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert 'New0' in archived and 'Old0' not in archived   # re-baselined
+
+
+def test_ordinary_edit_is_still_diffed_not_mistaken_for_a_rebuild(site):
+    """The guard must not swallow a large but genuine edit."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'V{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    # Half the variables replaced -- drastic, but the same project.
+    kept = {f'V{i}': f'={i}' for i in range(15)}
+    kept.update({f'W{i}': f'={i}' for i in range(15)})
+    _write_projx(site['source'] / 'Gamma.driveprojx', kept)
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma'")]
+        assert 'rebuilt' not in statuses
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] > 0
+
+
+def test_project_open_in_admin_is_deferred_not_synced(site):
+    assert _run(site) == 0                        # night 1: both archived
+
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    (site['source'] / 'Alpha.~driveproj').write_text('', encoding='utf-8')
+    assert _run(site) == 0
+
+    archived = site['repo'] / 'Alpha' / 'driveProj' / 'project.xml'
+    assert '999' not in archived.read_text(encoding='utf-8')   # mid-edit state not captured
+    with _db(site) as db:
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Alpha'").fetchone()[0] == 0
+        # An open project is present, not missing: it must not be marked removed
+        # (and then re-added as new once the user closes it).
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Alpha'")]
+        assert statuses == ['added']
+
+    # Closed again: the edit syncs normally on the next run.
+    (site['source'] / 'Alpha.~driveproj').unlink()
+    assert _run(site) == 0
+    assert '999' in archived.read_text(encoding='utf-8')
+
+
+def test_abandoned_lock_stops_deferring_and_is_never_deleted(site):
+    """A session that exits uncleanly leaves its lock behind. Past
+    lock_stale_hours the project must sync anyway -- but the lock file belongs
+    to DriveWorks (and often to another user on another machine), so we leave
+    it exactly where it is."""
+    assert _run(site) == 0
+
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    lock = site['source'] / 'Alpha.~driveproj'
+    lock.write_text('Ghost|DEAD-PC', encoding='utf-8')
+    stale = time.time() - 48 * 3600
+    os.utime(lock, (stale, stale))
+
+    assert _run(site) == 0
+    archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert '999' in archived              # synced despite the lock
+    assert lock.exists()                  # never ours to delete
+
+
+def test_lock_ageing_can_be_disabled(site):
+    """lock_stale_hours=0 keeps the old behaviour: defer while any lock exists."""
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg['lock_stale_hours'] = 0
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+    assert _run(site) == 0
+
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    lock = site['source'] / 'Alpha.~driveproj'
+    lock.write_text('Ghost|DEAD-PC', encoding='utf-8')
+    stale = time.time() - 48 * 3600
+    os.utime(lock, (stale, stale))
+
+    assert _run(site) == 0
+    archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert '999' not in archived          # still deferred, however old the lock
