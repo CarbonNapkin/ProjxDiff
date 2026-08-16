@@ -4,7 +4,7 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.8.0] - 2026-08-16
 
 ### Fixed
 
@@ -54,6 +54,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
   when the config loads, so a hand-edited `"6"` works and a `"lots"` fails
   with a message naming the key — rather than as a `TypeError` an hour into
   the night.
+- **Windows CI is green again**, for the first time since 1.7.0. Four GUI
+  tests written on macOS assumed macOS widget behaviour and failed against
+  the native Windows widget factory 1.7.0 introduced — so the two releases
+  that were *about* native Windows controls both shipped with Windows
+  unverified. No product code was at fault; the tests now pin the widget
+  factory and platform explicitly instead of inheriting whichever the runner
+  happened to have. Suite 294 → 311 tests.
 
 ## [1.7.1] - 2026-08-06
 
