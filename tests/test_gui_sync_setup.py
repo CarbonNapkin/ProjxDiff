@@ -768,6 +768,7 @@ def test_register_task_refuses_a_command_that_is_not_this_executable(monkeypatch
     monkeypatch.setattr(gui_mod.subprocess, 'run', explode)
 
     mgr = SimpleNamespace(_sync_command=lambda: 'x',
+                          _command_is_ours=gui_mod._SyncManager._command_is_ours,
                           _repair_task_line=gui_mod._SyncManager._repair_task_line)
     ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
     assert ok is False
@@ -787,6 +788,7 @@ def test_register_task_accepts_the_real_sync_command(monkeypatch):
 
     real = f'"{sys.executable}" --sync "C:\\ProjxArchive\\config.json"'
     mgr = SimpleNamespace(_sync_command=lambda: real,
+                          _command_is_ours=gui_mod._SyncManager._command_is_ours,
                           _repair_task_line=gui_mod._SyncManager._repair_task_line)
     ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
     assert ok is False
@@ -829,3 +831,16 @@ def test_filter_change_scrolls_back_to_top(tmp_path):
         assert [r['title'] for r in shown] == ['Proj00']
     finally:
         root.destroy()
+
+
+def test_plain_registration_refuses_a_foreign_command_too(monkeypatch):
+    """The non-elevated 'Run Nightly' path writes the same schtasks /Create /F
+    against the same hardcoded task name, so it needs the same refusal — it
+    just isn't elevated. Guarding only the repair path would leave the class
+    of bug open on the other half."""
+    monkeypatch.setattr(gui_mod.sys, 'platform', 'win32')
+    assert gui_mod._SyncManager._command_is_ours('x') is False
+    assert gui_mod._SyncManager._command_is_ours(
+        f'"{sys.executable}" --sync "C:\\ProjxArchive\\config.json"') is True
+    assert gui_mod._SyncManager._command_is_ours('') is False
+    assert gui_mod._SyncManager._command_is_ours(None) is False

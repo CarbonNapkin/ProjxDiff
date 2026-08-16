@@ -274,7 +274,8 @@ Examples:
     parser.add_argument('--dashboard', type=Path, metavar='CONFIG',
                        help='Regenerate the work-metrics dashboard for the given config')
     parser.add_argument('--dry-run', action='store_true',
-                       help='(with --sync) report changes without committing or recording')
+                       help='(with --sync) report changes without changing the '
+                            'archive, metrics, census or dashboard')
     parser.add_argument('--map', action='append', default=[], metavar='RAW=IDENTITY',
                        help='(with --census) map a display name to "Name <email>"')
     parser.add_argument('--track', action='append', default=[], metavar='PROJECT',
