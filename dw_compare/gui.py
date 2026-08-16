@@ -1935,6 +1935,20 @@ class _SyncManager:
     _TASK_NAME = 'ProjxDiff Nightly Sync'
 
     @staticmethod
+    def _command_is_ours(command: str) -> bool:
+        """Whether `command` actually runs this executable.
+
+        Both registration paths write `schtasks /Create /F` against a task name
+        hardcoded in _repair_task_line, so whatever reaches them replaces the
+        site's real nightly task. A junk command does not fail loudly there --
+        it succeeds at swapping a working task for a broken one, and the site
+        finds out when the archive stops moving. _sync_command always embeds
+        sys.executable, so this rejects only a caller that is not the app
+        asking for its own task; a test harness reaching past the platform
+        guard is exactly how this was found."""
+        return sys.executable.lower() in (command or '').lower()
+
+    @staticmethod
     def _repair_task_line(command: str, time_str: str) -> str:
         """The schtasks line the elevated repair runs: recreate the task in
         place (/F) — nightly, as SYSTEM, highest privileges — pointing at
@@ -1951,16 +1965,7 @@ class _SyncManager:
         if sys.platform != 'win32':
             return False, 'Scheduled tasks are a Windows feature.'
         command = self._sync_command()
-        # Pre-flight the same check the post-flight verify below makes, because
-        # the schtasks line hardcodes the production task name and runs with
-        # /F: anything reaching here rewrites the real nightly task, whatever
-        # it was handed. A junk command therefore does not fail loudly -- it
-        # succeeds at replacing a working task with a broken one, and the site
-        # finds out when the archive silently stops moving. _sync_command always
-        # embeds sys.executable, so this only ever rejects a caller that isn't
-        # the app asking for its own task (a test harness reaching past the
-        # platform guard is exactly how this was found).
-        if sys.executable.lower() not in command.lower():
+        if not self._command_is_ours(command):
             return False, ('Refusing to re-register the task: the command does '
                            f'not run this executable ({command!r}).')
         line = self._repair_task_line(command, time_str)
@@ -2003,6 +2008,17 @@ class _SyncManager:
                            'Windows will ask for administrator approval.'),
                      bg=_SM_CARD, fg=_SM_MUTED, anchor='w', wraplength=460,
                      justify='left').pack(fill='x', pady=(0, 8))
+        # Show what will actually be registered. Run from a source checkout
+        # rather than the installed app, sys.executable is the interpreter, so
+        # this registers "python.exe -m dw_compare ..." — which is a legitimate
+        # thing for a developer to want and the wrong thing on a deployed box,
+        # where it silently points the nightly back at a stale checkout. The
+        # command is not something to infer from which icon was clicked.
+        tk.Label(body, text='Will register:', bg=_SM_CARD, fg=_SM_MUTED,
+                 anchor='w').pack(fill='x')
+        tk.Label(body, text=self._sync_command(), bg=_SM_CARD, fg=_SM_TEXT,
+                 anchor='w', wraplength=460, justify='left',
+                 font=('TkFixedFont', 9)).pack(fill='x', pady=(0, 8))
         row = tk.Frame(body, bg=_SM_CARD)
         row.pack(fill='x')
         tk.Label(row, text='Run nightly at', bg=_SM_CARD, fg=_SM_TEXT).pack(side='left')
@@ -2022,11 +2038,19 @@ class _SyncManager:
                 ok, msg = self._register_task_elevated(t)
                 status.configure(text=msg, fg='#1b7a3d' if ok else '#c0392b')
                 return
+            command = self._sync_command()
+            # Same /F against the same hardcoded task name as the repair path,
+            # so it needs the same refusal — this one just isn't elevated.
+            if not self._command_is_ours(command):
+                status.configure(text='Refusing to register the task: the command '
+                                      f'does not run this executable ({command!r}).',
+                                 fg='#c0392b')
+                return
             try:
                 proc = subprocess.run(
                     ['schtasks', '/Create', '/F', '/SC', 'DAILY',
-                     '/TN', 'ProjxDiff Nightly Sync', '/ST', t,
-                     '/TR', self._sync_command()],
+                     '/TN', self._TASK_NAME, '/ST', t,
+                     '/TR', command],
                     capture_output=True, text=True)
             except OSError as e:
                 status.configure(text=f'Could not run schtasks: {e}', fg='#c0392b')

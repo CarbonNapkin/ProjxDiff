@@ -719,6 +719,8 @@ def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
     intentionally unsynced, not missing."""
     census = census or {'users': {}, 'projects': {}}
     missing = []
+    if not repo.is_dir():
+        return missing      # dry run against an archive that does not exist yet
     for d in sorted(repo.iterdir()):
         if not d.is_dir() or d.name.startswith('.'):
             continue
@@ -906,11 +908,15 @@ def run(cfg: dict, dry_run: bool) -> int:
     reports_dir = data_dir / 'reports'
 
     # One run at a time; a crashed run's lock goes stale after RUN_LOCK_STALE_S.
+    # A dry run neither takes the lock nor honours it: it writes nothing the
+    # lock protects, and taking it meant an operator checking their config at
+    # 01:59 aborted that night's real sync with exit 3.
     lock = data_dir / 'sync.lock'
-    if lock.exists() and time.time() - lock.stat().st_mtime < RUN_LOCK_STALE_S:
-        log.error('another sync appears to be running (lock: %s) -- aborting', lock)
-        return 3
-    lock.write_text(str(started), encoding='utf-8')
+    if not dry_run:
+        if lock.exists() and time.time() - lock.stat().st_mtime < RUN_LOCK_STALE_S:
+            log.error('another sync appears to be running (lock: %s) -- aborting', lock)
+            return 3
+        lock.write_text(str(started), encoding='utf-8')
 
     cpath = census_mod.census_path(cfg)
     census = census_mod.load_census(cpath)
@@ -940,7 +946,13 @@ def run(cfg: dict, dry_run: bool) -> int:
                 errors.append(f'{sname or "source"}: source_dir unreachable '
                               f'({scfg["source_dir"]})')
                 continue
-            ensure_repo(scfg['archive_repo'], cfg)
+            # Not on a dry run: ensure_repo git-inits a missing archive and
+            # writes user.name/user.email into an existing one's .git/config.
+            # Small, but "report changes without recording anything" has to
+            # mean it -- an operator checking a config should not be the thing
+            # that creates the archive it was checking.
+            if not dry_run:
+                ensure_repo(scfg['archive_repo'], cfg)
             found, conflicts, deferred = _run_source(sname, scfg, cfg, census,
                                                      conn, run_date, reports_dir,
                                                      dry_run, counts, errors)
@@ -1007,7 +1019,8 @@ def run(cfg: dict, dry_run: bool) -> int:
     finally:
         if conn is not None:
             conn.close()
-        lock.unlink(missing_ok=True)
+        if not dry_run:      # a dry run never took it; never remove someone else's
+            lock.unlink(missing_ok=True)
 
 
 def setup_logging(data_dir: Path) -> None:
@@ -1024,7 +1037,9 @@ def main(argv=None) -> int:
         description='Nightly DriveWorks project archive + change tracking')
     parser.add_argument('config', type=Path, help='Path to config JSON')
     parser.add_argument('--dry-run', action='store_true',
-                        help='Report changes without committing or recording anything')
+                        help='Report changes without changing the archive, the '
+                             'metrics, the census or the dashboard (the run log '
+                             'is still appended to)')
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)

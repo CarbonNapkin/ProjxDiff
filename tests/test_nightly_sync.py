@@ -612,3 +612,30 @@ def test_numeric_tuning_strings_are_coerced(site):
     assert loaded['lock_stale_hours'] == 6
     assert loaded['rebuild_similarity'] == 0.05
     assert loaded['rebuild_min_elements'] == 25
+
+
+def test_dry_run_neither_takes_nor_honours_the_run_lock(site):
+    """REGRESSION: a dry run took the one-run-at-a-time lock, so an operator
+    checking their config at 01:59 aborted that night's real sync with exit 3.
+    It writes nothing the lock protects, so it should neither take it nor
+    be stopped by one."""
+    lock = site['data'] / 'sync.lock'
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text('a real run is in progress', encoding='utf-8')
+
+    assert _run(site, dry_run=True) == 0                 # not blocked by it
+    assert lock.read_text(encoding='utf-8') == 'a real run is in progress'
+
+
+def test_dry_run_does_not_create_or_touch_the_archive_repo(site):
+    """'Report changes without recording anything' has to mean it: ensure_repo
+    git-inits a missing archive and writes user.name/user.email into an
+    existing one. Checking a config should not be what creates the archive."""
+    assert not site['repo'].exists()
+    assert _run(site, dry_run=True) == 0
+    assert not site['repo'].exists()                     # nothing conjured
+
+    assert _run(site) == 0                               # a real run builds it
+    cfg_before = (site['repo'] / '.git' / 'config').read_text(encoding='utf-8')
+    assert _run(site, dry_run=True) == 0
+    assert (site['repo'] / '.git' / 'config').read_text(encoding='utf-8') == cfg_before

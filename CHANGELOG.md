@@ -21,7 +21,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
   the task, not only afterwards. If your nightly task shows result
   `-2147024894`, re-run Tools ▸ Manage Nightly Sync ▸ Repair scheduled task
   from an elevated session — the archive catches up on the next run, though
-  the missed nights collapse into a single diff.
+  the missed nights collapse into a single diff. Both registration paths now
+  refuse, not just the repair one.
+- **`--dry-run` no longer aborts that night's real sync.** It took the
+  one-run-at-a-time lock, so checking a config at 01:59 made the 02:00 run
+  exit 3. A dry run now neither takes the lock nor honours one. It also no
+  longer calls `ensure_repo`, which would git-init a missing archive and
+  rewrite an existing one's `user.name`/`user.email` — "report changes
+  without recording anything" now means it, apart from the run log.
 
 - **A rebuilt project is no longer diffed against a stranger.** Deleting a
   project and recreating it under the same name kept the old archive
@@ -64,6 +71,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The schedule dialog shows the command it will register.** Run from a
+  source checkout rather than the installed app, the nightly task gets
+  `python.exe -m dw_compare …` instead of the installed exe — reasonable for a
+  developer, wrong on a deployed machine, and previously invisible either way.
 - The nightly sync's numeric settings (`rebuild_similarity`,
   `rebuild_min_elements`, `lock_stale_hours`) are coerced and range-checked
   when the config loads, so a hand-edited `"6"` works and a `"lots"` fails
