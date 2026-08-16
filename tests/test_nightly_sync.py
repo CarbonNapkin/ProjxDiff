@@ -8,9 +8,11 @@ once.
 """
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -356,3 +358,257 @@ def test_dry_run_never_opens_group_db(site, monkeypatch):
 
     monkeypatch.setattr(sync_mod, 'open_group_db', boom)
     assert _run(site, dry_run=True) == 0
+
+
+# ------------------------------------------------- rebuild / open guards ----
+
+def test_rebuilt_project_is_rebaselined_not_diffed_against_a_stranger(site):
+    """Delete-and-rebuild under the same name keeps the archive directory, so
+    is_new stays False. Without the guard the rebuild is diffed against the
+    project it replaced and every element of both lands in the metrics."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'Old{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    # Same filename, entirely different contents: not an edit, a new project.
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'New{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma' ORDER BY id")]
+        assert statuses == ['added', 'rebuilt']
+        # The whole point: no 30-removed/30-added explosion in the work metrics.
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] == 0
+
+    archived = (site['repo'] / 'Gamma' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert 'New0' in archived and 'Old0' not in archived   # re-baselined
+
+
+def test_ordinary_edit_is_still_diffed_not_mistaken_for_a_rebuild(site):
+    """The guard must not swallow a large but genuine edit."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'V{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    # Half the variables replaced -- drastic, but the same project.
+    kept = {f'V{i}': f'={i}' for i in range(15)}
+    kept.update({f'W{i}': f'={i}' for i in range(15)})
+    _write_projx(site['source'] / 'Gamma.driveprojx', kept)
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma'")]
+        assert 'rebuilt' not in statuses
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] > 0
+
+
+def test_project_open_in_admin_is_deferred_not_synced(site):
+    assert _run(site) == 0                        # night 1: both archived
+
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    (site['source'] / 'Alpha.~driveproj').write_text('', encoding='utf-8')
+    assert _run(site) == 0
+
+    archived = site['repo'] / 'Alpha' / 'driveProj' / 'project.xml'
+    assert '999' not in archived.read_text(encoding='utf-8')   # mid-edit state not captured
+    with _db(site) as db:
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Alpha'").fetchone()[0] == 0
+        # An open project is present, not missing: it must not be marked removed
+        # (and then re-added as new once the user closes it).
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Alpha'")]
+        assert statuses == ['added']
+
+    # Closed again: the edit syncs normally on the next run.
+    (site['source'] / 'Alpha.~driveproj').unlink()
+    assert _run(site) == 0
+    assert '999' in archived.read_text(encoding='utf-8')
+
+
+def test_abandoned_lock_stops_deferring_and_is_never_deleted(site):
+    """A session that exits uncleanly leaves its lock behind. Past
+    lock_stale_hours the project must sync anyway -- but the lock file belongs
+    to DriveWorks (and often to another user on another machine), so we leave
+    it exactly where it is."""
+    assert _run(site) == 0
+
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    lock = site['source'] / 'Alpha.~driveproj'
+    lock.write_text('Ghost|DEAD-PC', encoding='utf-8')
+    stale = time.time() - 48 * 3600
+    os.utime(lock, (stale, stale))
+
+    assert _run(site) == 0
+    archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert '999' in archived              # synced despite the lock
+    assert lock.exists()                  # never ours to delete
+
+
+def test_lock_ageing_can_be_disabled(site):
+    """lock_stale_hours=0 keeps the old behaviour: defer while any lock exists."""
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg['lock_stale_hours'] = 0
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+    assert _run(site) == 0
+
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    lock = site['source'] / 'Alpha.~driveproj'
+    lock.write_text('Ghost|DEAD-PC', encoding='utf-8')
+    stale = time.time() - 48 * 3600
+    os.utime(lock, (stale, stale))
+
+    assert _run(site) == 0
+    archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert '999' not in archived          # still deferred, however old the lock
+
+
+def test_growth_that_keeps_everything_is_not_a_rebuild(site):
+    """The guard asks how much of the ARCHIVED project survived, not how alike
+    the two copies are. A project that keeps every element it had and grows
+    sixtyfold shares a vanishing fraction of the union of the two — a
+    similarity ratio would tear it down and re-baseline it."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'V{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    grown = {f'V{i}': f'={i}' for i in range(30)}
+    grown.update({f'N{i}': f'={i}' for i in range(2000)})
+    _write_projx(site['source'] / 'Gamma.driveprojx', grown)
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma' ORDER BY id")]
+        assert statuses == ['added']          # diffed as the edit it is
+        assert db.execute("SELECT SUM(added) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] == 2000
+
+
+def test_archive_is_never_rebaselined_over_by_an_unreadable_copy(site):
+    """Nothing of the old project left AND nothing much in its place is at
+    least as likely to be a truncated copy or a parser that no longer
+    understands the file as it is a rebuild. Re-baselining there would replace
+    a good archive with a bad copy, silently, for every project on the share."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'V{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    _write_projx(site['source'] / 'Gamma.driveprojx', {})
+    assert _run(site) == 1                    # refused, and the run says so
+
+    archived = (site['repo'] / 'Gamma' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert 'V0' in archived                   # archive untouched
+    with _db(site) as db:
+        assert [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma'")] == ['added']
+
+
+def test_small_archive_is_diffed_not_treated_as_a_rebuild(site):
+    """Below rebuild_min_elements the ratio is meaningless — a two-variable
+    project sharing nothing with its archived copy is an ordinary edit."""
+    _write_projx(site['source'] / 'Gamma.driveprojx', {'A': '=1', 'B': '=2'})
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Gamma.driveprojx', {'C': '=3', 'D': '=4'})
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        assert [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma'")] == ['added']
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] == 1
+
+
+def test_rebuild_still_writes_its_reports(site):
+    """Skipping record_diff keeps the work metrics clean; skipping the reports
+    would leave no record at all of what the rebuild replaced."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'Old{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'New{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    day = sorted((site['data'] / 'reports').iterdir())[-1]
+    assert (day / 'Gamma.html').is_file()
+    report = json.loads((day / 'Gamma.json').read_text(encoding='utf-8'))
+    assert report['summary']['added'] == 30 and report['summary']['removed'] == 30
+
+
+def test_deferred_projects_reach_the_attention_panel(site):
+    from dw_compare import dashboard
+
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    (site['source'] / 'Alpha.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
+    assert _run(site) == 0
+
+    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
+    assert [d['project'] for d in census['deferred']] == ['Alpha']
+    assert census['deferred'][0]['holder'] == 'jsmith|WS-04'
+
+    html = dashboard._attention_html(census)
+    assert 'open in Administrator' in html and 'jsmith|WS-04' in html
+
+    # It clears itself once the project is closed — not a standing decision.
+    (site['source'] / 'Alpha.~driveproj').unlink()
+    assert _run(site) == 0
+    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
+    assert census['deferred'] == []
+
+
+def test_duplicate_name_still_conflicts_when_the_chosen_file_is_locked(site):
+    """Deferral happens after the name-collision check, so an open project
+    does not quietly swallow the conflict its twin should raise."""
+    _write_projx(site['source'] / 'Dup.driveprojx', {'A': '=1'})
+    _write_projx(site['source'] / 'nested' / 'Dup.driveprojx', {'B': '=2'})
+    (site['source'] / 'Dup.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
+
+    assert _run(site) == 1                    # the duplicate is a run error
+
+    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
+    assert [c['path'] for c in census['conflicts']] == ['nested/Dup.driveprojx']
+    assert [d['project'] for d in census['deferred']] == ['Dup']
+    assert not (site['repo'] / 'Dup').exists()   # neither copy was archived
+
+
+@pytest.mark.parametrize('key, bad', [
+    ('rebuild_similarity', '5%'),
+    ('rebuild_similarity', 1.5),
+    ('rebuild_min_elements', 'lots'),
+    ('lock_stale_hours', True),
+    ('lock_stale_hours', -1),
+])
+def test_bad_tuning_values_fail_at_load_not_at_2am(site, key, bad):
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg[key] = bad
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+    with pytest.raises(SystemExit) as exc:
+        nightly_sync.load_config(site['cfg_path'])
+    assert key in str(exc.value)
+
+
+def test_numeric_tuning_strings_are_coerced(site):
+    """A hand-edited config quoting its numbers is a typo, not an error —
+    but it has to become a number here, because `"6" * 3600` is 3600 copies
+    of "6" and the TypeError would land an hour into the night."""
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg.update({'lock_stale_hours': '6', 'rebuild_similarity': '0.05',
+                'rebuild_min_elements': '25'})
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+
+    loaded = nightly_sync.load_config(site['cfg_path'])
+    assert loaded['lock_stale_hours'] == 6
+    assert loaded['rebuild_similarity'] == 0.05
+    assert loaded['rebuild_min_elements'] == 25
