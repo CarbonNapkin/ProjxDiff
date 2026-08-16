@@ -8,6 +8,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Running the test suite on a deployed Windows machine no longer breaks that
+  machine's nightly sync.** `Repair scheduled task` builds a `schtasks /Create
+  /F` line that hardcodes the production task name, so any code path reaching
+  it rewrites the real nightly task with whatever command it is handed — and a
+  junk command does not fail loudly, it quietly replaces a working task with a
+  broken one. A Windows-only test defect (see below) did exactly that on a
+  deployed box, re-registering the live task to run the command `x`; the task
+  then failed nightly with `0x80070002` (file not found) and the archive
+  stopped moving for three nights before anyone noticed. The repair now
+  verifies the command actually runs the current executable *before* touching
+  the task, not only afterwards. If your nightly task shows result
+  `-2147024894`, re-run Tools ▸ Manage Nightly Sync ▸ Repair scheduled task
+  from an elevated session — the archive catches up on the next run, though
+  the missed nights collapse into a single diff.
+
 - **A rebuilt project is no longer diffed against a stranger.** Deleting a
   project and recreating it under the same name kept the old archive
   directory, so the nightly sync treated the rebuild as an edit and reported
@@ -58,9 +73,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   tests written on macOS assumed macOS widget behaviour and failed against
   the native Windows widget factory 1.7.0 introduced — so the two releases
   that were *about* native Windows controls both shipped with Windows
-  unverified. No product code was at fault; the tests now pin the widget
-  factory and platform explicitly instead of inheriting whichever the runner
-  happened to have. Suite 294 → 311 tests.
+  unverified, and a red baseline meant nobody read the result. Three of the
+  four were harmless; the fourth was the scheduled-task defect above. The
+  tests now pin the widget factory and platform explicitly instead of
+  inheriting whichever the runner happened to have. Suite 294 → 313 tests.
 
 ## [1.7.1] - 2026-08-06
 

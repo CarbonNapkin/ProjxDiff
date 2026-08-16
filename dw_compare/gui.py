@@ -1950,7 +1950,20 @@ class _SyncManager:
         executable. Returns (ok, human message)."""
         if sys.platform != 'win32':
             return False, 'Scheduled tasks are a Windows feature.'
-        line = self._repair_task_line(self._sync_command(), time_str)
+        command = self._sync_command()
+        # Pre-flight the same check the post-flight verify below makes, because
+        # the schtasks line hardcodes the production task name and runs with
+        # /F: anything reaching here rewrites the real nightly task, whatever
+        # it was handed. A junk command therefore does not fail loudly -- it
+        # succeeds at replacing a working task with a broken one, and the site
+        # finds out when the archive silently stops moving. _sync_command always
+        # embeds sys.executable, so this only ever rejects a caller that isn't
+        # the app asking for its own task (a test harness reaching past the
+        # platform guard is exactly how this was found).
+        if sys.executable.lower() not in command.lower():
+            return False, ('Refusing to re-register the task: the command does '
+                           f'not run this executable ({command!r}).')
+        line = self._repair_task_line(command, time_str)
         script = Path(tempfile.gettempdir()) / 'projxdiff_repair_task.cmd'
         script.write_text('@echo off\r\n' + line + '\r\nexit /b %errorlevel%\r\n',
                           encoding='utf-8')
