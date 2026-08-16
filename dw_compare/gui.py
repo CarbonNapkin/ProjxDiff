@@ -395,18 +395,41 @@ class CompareApp:
                   font=('TkDefaultFont', 10, 'bold')).pack(side='right', padx=14)
         _center_over(self.root, top)
 
+    # Tallest the help body may grow before it scrolls instead. The dialog
+    # sizes itself to its content and is centred, so without a cap a long
+    # help runs off the top and bottom of a laptop screen with no way to
+    # reach the Close button.
+    _HELP_MAX_BODY_H = 520
+
     def _show_help(self) -> None:
-        """Concise in-app usage help covering both halves of the app: the
-        one-off comparison and the nightly sync / dashboard pipeline."""
+        """In-app usage help covering both halves of the app: the one-off
+        comparison and the nightly sync / dashboard pipeline. Scrolls past
+        _HELP_MAX_BODY_H so it stays usable on a short screen."""
         top, body = self._dialog('How to Use', 'Two tools in one window')
 
+        canvas = tk.Canvas(body, bg=_SM_CARD, highlightthickness=0)
+        vs = tk.Scrollbar(body, orient='vertical', command=canvas.yview)
+        content = tk.Frame(canvas, bg=_SM_CARD)
+        content.bind('<Configure>',
+                     lambda _e: canvas.configure(scrollregion=canvas.bbox('all')))
+        win = canvas.create_window((0, 0), window=content, anchor='nw')
+        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(win, width=e.width))
+        canvas.configure(yscrollcommand=vs.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        # Wheel scroll only while the pointer is over the help, so the binding
+        # never leaks to the main window after this dialog closes.
+        canvas.bind('<Enter>', lambda _e: canvas.bind_all(
+            '<MouseWheel>', lambda e: canvas.yview_scroll(int(-e.delta / 120), 'units')))
+        canvas.bind('<Leave>', lambda _e: canvas.unbind_all('<MouseWheel>'))
+        top.bind('<Destroy>', lambda _e: canvas.unbind_all('<MouseWheel>'), add='+')
+
         def heading(text, first=False):
-            tk.Label(body, text=text, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
+            tk.Label(content, text=text, bg=_SM_CARD, fg=_SM_TEXT, anchor='w',
                      font=('TkDefaultFont', 11, 'bold')).pack(
                 fill='x', pady=((0 if first else 10), 2))
 
         def para(text):
-            tk.Label(body, text=text, bg=_SM_CARD, fg=_SM_TEXT, justify='left',
+            tk.Label(content, text=text, bg=_SM_CARD, fg=_SM_TEXT, justify='left',
                      anchor='w', wraplength=520).pack(fill='x')
 
         heading('Compare two projects', first=True)
@@ -418,12 +441,68 @@ class CompareApp:
              'and form rules — with search and status filters on top.')
 
         heading('Track your library nightly')
-        para('Tools ▸ Manage Nightly Sync sets up automatic tracking: each '
-             'environment group (production, staging, …) is archived into '
-             'version control every night, changes are measured per project and '
-             'per user, and a work dashboard is generated. New projects and '
-             'unfamiliar DriveWorks user names show up there for one-click '
-             'triage. Command-line equivalents: --sync, --census, --dashboard.')
+        para('Tools ▸ Manage Nightly Sync turns a share full of .driveprojx '
+             'files into a tracked history. Each environment group '
+             '(production, staging, …) gets its own archive: an ordinary git '
+             'repository holding the unpacked contents of every project.\n\n'
+             'Nothing is ever overwritten. Each night\'s changes become a '
+             'commit, authored to the DriveWorks user who last saved the '
+             'project — so you can see what any project looked like on any '
+             'past date, and who changed it. The archive is a plain repo on '
+             'disk: standard git tools read it, and it is yours whether or '
+             'not you keep using this app.')
+
+        heading('What happens each night')
+        para('1.  Every .driveprojx under the group\'s folder is copied and '
+             'unpacked. Files matching an exclude pattern are skipped.\n'
+             '2.  Each project is compared with its archived copy. Unchanged '
+             'projects do nothing at all — no commit, no rows, no report.\n'
+             '3.  A changed project gets an HTML and JSON report under '
+             'reports\\<date>\\, per-element rows in the metrics database, '
+             'and a commit naming what moved.\n'
+             '4.  Projects that are not a plain edit are handled separately '
+             '(below) rather than diffed.\n'
+             '5.  The dashboard is rebuilt.\n\n'
+             'Everything is written to sync.log in the data folder. Note the '
+             'app is windowed, so running a sync by hand from a terminal '
+             'prints nothing to the console — read the log instead.')
+
+        heading('Projects that are not a plain edit')
+        para('New — archived on sight, with no diff. Comparing against '
+             'nothing would count every element as added and distort the '
+             'first day\'s numbers.\n'
+             'Rebuilt — deleted and recreated under its old name. Almost none '
+             'of the archived project survives, so it is re-baselined rather '
+             'than diffed, which would otherwise report the whole of both '
+             'projects as churn.\n'
+             'Open in Administrator — a "<name>.~driveproj" lock sits beside '
+             'the file, so it is left alone until the next run instead of '
+             'being archived mid-edit. It is never mistaken for a project '
+             'that vanished, and the lock is never deleted — it is what stops '
+             'a second person opening the project.\n'
+             'Gone from the share — recorded once, not every night after, and '
+             'kept in the archive unless you have asked for removals.')
+
+        heading('Triage: New, Track, Ignore')
+        para('The first time the sync meets a project it files it as New and '
+             'syncs it anyway, so nothing is missed while you decide. Manage '
+             'Nightly Sync lists every project, filtered by All / New / Track '
+             '/ Ignore:\n\n'
+             '•  Track — a real project whose work you want measured.\n'
+             '•  Ignore — templates, backups, spec-generated copies. It stays '
+             'on the share, but the sync skips it from now on and it drops '
+             'off the attention list.\n'
+             '•  New — not yet decided. These are what the dashboard nags '
+             'you about.\n\n'
+             'Unmapped users — a DriveWorks display name the app has not seen '
+             'before, waiting to be matched to a person as "Name <email>". '
+             'Mapping heals past metrics retroactively, so nothing is lost by '
+             'doing it late.\n'
+             'Name conflicts — two files claiming one project name. Only the '
+             'registered path syncs; rename or exclude the other copy.\n'
+             'Not synced last run — projects that were open in Administrator. '
+             'Nothing to do; they sync themselves once closed.\n\n'
+             'Command-line equivalents: --sync, --census, --dashboard.')
 
         # Only shown when the deployment has opted into the database
         # surface — everyone else never sees these controls, so no help
@@ -443,10 +522,24 @@ class CompareApp:
         para('Everything runs locally; your project files never leave your '
              'machines.')
 
-        link = tk.Label(body, text='More at ' + DOWNLOAD_PAGE, bg=_SM_CARD,
+        link = tk.Label(content, text='More at ' + DOWNLOAD_PAGE, bg=_SM_CARD,
                         fg=_SM_ACCENT, cursor='hand2', anchor='w')
         link.pack(fill='x', pady=(10, 0))
         link.bind('<Button-1>', lambda _e: webbrowser.open(DOWNLOAD_PAGE))
+
+        # Size the viewport to the content, capped — and only show the
+        # scrollbar when it is actually needed, so a short help (no database
+        # section) looks exactly as it always did.
+        content.update_idletasks()
+        needed = content.winfo_reqheight()
+        # Width has to be set explicitly: a Canvas does not propagate its
+        # content's requested size, so the dialog would otherwise shrink to
+        # the canvas default and clip the text — and there is no horizontal
+        # scrolling to rescue it.
+        canvas.configure(width=content.winfo_reqwidth(),
+                         height=min(needed, self._HELP_MAX_BODY_H))
+        if needed > self._HELP_MAX_BODY_H:
+            vs.pack(side='right', fill='y')
 
         self._finish_dialog(top)
 

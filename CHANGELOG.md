@@ -71,6 +71,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Help ▸ How to Use now explains the nightly side properly.** It was one
+  paragraph for a feature with an archive format, a nightly lifecycle, and a
+  triage workflow. It now covers what the archive actually is (an ordinary git
+  repository you own, one per environment group, each night a commit authored
+  to whoever last saved the project), what a run does step by step, the four
+  cases that are not a plain edit (new, rebuilt, open in Administrator, gone
+  from the share), and what New / Track / Ignore mean — including that mapping
+  a user heals past metrics retroactively. The dialog scrolls past a height
+  cap, since it sizes itself to its content and would otherwise run off a
+  laptop screen with the Close button out of reach.
 - **The schedule dialog shows the command it will register.** Run from a
   source checkout rather than the installed app, the nightly task gets
   `python.exe -m dw_compare …` instead of the installed exe — reasonable for a
