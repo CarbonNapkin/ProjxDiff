@@ -527,7 +527,9 @@ def test_test_connection_success_and_failure(monkeypatch):
         app.new_db_database.set('DWGroup')
         status = _run_test_connection(root, app, 'new')
         assert 'Login failed' in status.cget('text')
-        assert app.new_test_btn.cget('state') == 'normal'
+        # str(): a ttk widget (the Windows button factory) answers cget with a
+        # Tcl object, not a str, so a bare == silently fails there only.
+        assert str(app.new_test_btn.cget('state')) == 'normal'
     finally:
         root.destroy()
 
@@ -629,7 +631,12 @@ def test_native_widget_mode_builds_and_toggles(monkeypatch):
 
 
 def test_find_servers_populates_picker(monkeypatch):
+    """The classic-Tk picker: a '▾' button posting a tk.Menu. Windows builds a
+    real ttk.Combobox instead and has no find button at all (see
+    test_native_server_combobox_lists_discovered), so pin the flag rather than
+    letting the platform decide which path this exercises."""
     from dw_compare import dbsource
+    monkeypatch.setattr(gui_mod, '_NATIVE_WIDGETS', False)
     monkeypatch.setattr(dbsource, 'discover_servers', lambda timeout=2.0: [
         {'server': 'KEES-DB', 'host': 'KEES-DB', 'instance': '', 'version': '15.0.4043.16'},
         {'server': 'KEES-DB\\STAGING', 'host': 'KEES-DB', 'instance': 'STAGING', 'version': ''},
@@ -642,7 +649,7 @@ def test_find_servers_populates_picker(monkeypatch):
         t.join(timeout=5)
         for _ in range(50):
             root.update()
-            if app.old_find_btn.cget('state') != 'disabled':
+            if str(app.old_find_btn.cget('state')) != 'disabled':
                 break
             time.sleep(0.05)
         menu = app._servers_menu
@@ -655,6 +662,7 @@ def test_find_servers_populates_picker(monkeypatch):
 
 def test_find_servers_empty_network_reports_gently(monkeypatch):
     from dw_compare import dbsource
+    monkeypatch.setattr(gui_mod, '_NATIVE_WIDGETS', False)   # classic-Tk picker
     monkeypatch.setattr(dbsource, 'discover_servers', lambda timeout=2.0: [])
     gui_mod._save_setting('enable_db', True)
     root, app = _make_app()
@@ -729,7 +737,12 @@ def test_repair_task_line_quoting():
     assert line.endswith('\\"C:\\ProjxArchive\\config.json\\""')
 
 
-def test_register_task_elevated_is_windows_only():
+def test_register_task_elevated_is_windows_only(monkeypatch):
+    """The guard itself, pinned on every platform. Without the forced platform
+    this passed only where it was vacuous: on Windows the guard lets the call
+    through, and it went on to shell out to Start-Process -Verb RunAs — a UAC
+    prompt nobody is there to answer."""
+    monkeypatch.setattr(gui_mod.sys, 'platform', 'darwin')
     mgr = SimpleNamespace(_sync_command=lambda: 'x',
                           _repair_task_line=gui_mod._SyncManager._repair_task_line)
     ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
