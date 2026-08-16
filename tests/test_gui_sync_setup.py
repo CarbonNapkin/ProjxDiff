@@ -4,6 +4,7 @@ the add-environment-group path (real Tk widgets where a display exists,
 matching test_census.py's GUI test)."""
 
 import json
+import sys
 import zipfile
 from types import SimpleNamespace
 from pathlib import Path
@@ -739,15 +740,58 @@ def test_repair_task_line_quoting():
 
 def test_register_task_elevated_is_windows_only(monkeypatch):
     """The guard itself, pinned on every platform. Without the forced platform
-    this passed only where it was vacuous: on Windows the guard lets the call
-    through, and it went on to shell out to Start-Process -Verb RunAs — a UAC
-    prompt nobody is there to answer."""
+    this passed only where it was vacuous: on Windows the guard let the call
+    through to the schtasks line below — see the next test for what that cost."""
     monkeypatch.setattr(gui_mod.sys, 'platform', 'darwin')
     mgr = SimpleNamespace(_sync_command=lambda: 'x',
                           _repair_task_line=gui_mod._SyncManager._repair_task_line)
     ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
     assert ok is False
     assert 'Windows' in msg
+
+
+def test_register_task_refuses_a_command_that_is_not_this_executable(monkeypatch):
+    """REGRESSION: the schtasks line hardcodes the production task name and
+    runs with /F, so anything reaching it rewrites the real nightly task with
+    whatever command it was handed — and a junk command does not fail loudly,
+    it quietly replaces a working task with a broken one.
+
+    This is not hypothetical. The Windows-only failure of the test above ran
+    exactly that path on every Windows CI run, and on a deployed box it
+    re-registered the client's live nightly sync to run the command 'x',
+    costing three nights of archiving before anyone noticed. Nothing must
+    reach schtasks without the command naming this executable."""
+    monkeypatch.setattr(gui_mod.sys, 'platform', 'win32')
+
+    def explode(*a, **k):                      # nothing may shell out
+        raise AssertionError('schtasks/PowerShell must not be reached')
+    monkeypatch.setattr(gui_mod.subprocess, 'run', explode)
+
+    mgr = SimpleNamespace(_sync_command=lambda: 'x',
+                          _repair_task_line=gui_mod._SyncManager._repair_task_line)
+    ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
+    assert ok is False
+    assert 'Refusing to re-register' in msg
+
+
+def test_register_task_accepts_the_real_sync_command(monkeypatch):
+    """The guard must not block the actual repair, which is the whole feature.
+    Stops at the shell-out — running it for real wants a UAC prompt."""
+    monkeypatch.setattr(gui_mod.sys, 'platform', 'win32')
+    reached = {}
+
+    def fake_run(cmd, *a, **k):
+        reached['cmd'] = cmd
+        raise RuntimeError('stop here')        # caught as a launch failure
+    monkeypatch.setattr(gui_mod.subprocess, 'run', fake_run)
+
+    real = f'"{sys.executable}" --sync "C:\\ProjxArchive\\config.json"'
+    mgr = SimpleNamespace(_sync_command=lambda: real,
+                          _repair_task_line=gui_mod._SyncManager._repair_task_line)
+    ok, msg = gui_mod._SyncManager._register_task_elevated(mgr, '02:00')
+    assert ok is False
+    assert 'Could not launch' in msg           # got past the guard, not blocked
+    assert 'powershell' in reached['cmd'][0]
 
 
 def test_filter_change_scrolls_back_to_top(tmp_path):
