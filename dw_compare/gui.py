@@ -1664,6 +1664,25 @@ class _SyncManager:
                          bg=_SM_BG, fg=_SM_MUTED, anchor='w', wraplength=880,
                          justify='left').pack(fill='x')
 
+        # Nothing to resolve here — a project open in Administrator syncs by
+        # itself once it is closed. It is listed so "why didn't it sync?" has
+        # an answer without going to the log.
+        deferred = self.census.get('deferred', [])
+        if deferred:
+            tk.Label(wrap, text=f'NOT SYNCED LAST RUN ({len(deferred)})', bg=_SM_BG,
+                     fg=_SM_MUTED, anchor='w',
+                     font=('TkDefaultFont', 8, 'bold')).pack(fill='x', pady=(8, 2))
+            tk.Label(wrap, text='Open in DriveWorks Administrator at sync time, so it was '
+                                'left alone rather than archived mid-edit. These sync on '
+                                'the next run once closed.',
+                     bg=_SM_BG, fg=_SM_MUTED, anchor='w', justify='left',
+                     wraplength=880).pack(fill='x')
+            for d in deferred:
+                held = f'  (held by {d["holder"]})' if d.get('holder') else ''
+                tk.Label(wrap, text=f'· {d.get("project", "")}{held}',
+                         bg=_SM_BG, fg=_SM_MUTED, anchor='w', wraplength=880,
+                         justify='left').pack(fill='x')
+
     # ------------------------------------------------------------- helpers ----
 
     def _file_meta(self, abs_path: Path) -> tuple:

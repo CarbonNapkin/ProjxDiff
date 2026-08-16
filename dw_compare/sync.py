@@ -50,7 +50,11 @@ log = logging.getLogger('nightly_sync')
 
 COPY_ATTEMPTS = 3
 COPY_RETRY_DELAY_S = 10
-LOCK_STALE_S = 6 * 3600
+# How long the *run* lock (data_dir/sync.lock, one sync at a time) may sit
+# untouched before a crashed run is assumed. Nothing to do with the per-project
+# Administrator lock below, which is DriveWorks' and governed by
+# `lock_stale_hours`.
+RUN_LOCK_STALE_S = 6 * 3600
 
 # DriveWorks Administrator drops a "<stem>.~driveproj" sidecar beside a project
 # for as long as it has it open. Confirmed on a real 22.2 session: the sidecar
@@ -162,6 +166,29 @@ def add_source(config_path: Path, name: str, source_dir) -> str:
     return slug
 
 
+def _validate_tuning(cfg: dict) -> None:
+    """Coerce and range-check the numeric knobs.
+
+    These are hand-editable and GUI-written, and every one of them is used in
+    arithmetic deep inside a run — `"6" * 3600` is a 3600-copy string, not a
+    number, and the TypeError would surface an hour into the night rather than
+    at load. Fail here instead, where the message can name the key."""
+    for key, lo, hi in (('rebuild_similarity', 0.0, 1.0),
+                        ('rebuild_min_elements', 0, None),
+                        ('lock_stale_hours', 0, None)):
+        raw = cfg[key]
+        if isinstance(raw, bool):     # bool is an int; nobody means True here
+            raise SystemExit(f'config error: {key} must be a number, got {raw!r}')
+        try:
+            val = float(raw) if key == 'rebuild_similarity' else int(raw)
+        except (TypeError, ValueError):
+            raise SystemExit(f'config error: {key} must be a number, got {raw!r}')
+        if val < lo or (hi is not None and val > hi):
+            span = f'{lo}-{hi}' if hi is not None else f'{lo} or more'
+            raise SystemExit(f'config error: {key} must be {span}, got {raw!r}')
+        cfg[key] = val
+
+
 def load_config(path: Path) -> dict:
     """Load and validate a sync config. Two shapes are accepted:
 
@@ -184,6 +211,8 @@ def load_config(path: Path) -> dict:
             f'config not found: {path}\n'
             'Create one with: python -m dw_compare --init-config <folder>\n'
             '(or in the app: Tools > Manage Nightly Sync)')
+
+    _validate_tuning(cfg)
 
     if cfg['sources']:
         if not cfg.get('data_dir'):
@@ -287,6 +316,12 @@ def project_lock(zip_path: Path):
     except OSError:
         holder = ''
     return holder, age
+
+
+def _lock_is_stale(age: float, lock_stale_s: float) -> bool:
+    """Whether a lock this old should be treated as abandoned. `lock_stale_s`
+    of 0 disables the ageing: defer for as long as any lock is present."""
+    return 0 < lock_stale_s <= age
 
 
 # Every dict on DWProject that holds diffable, name-keyed elements. Component
@@ -525,15 +560,47 @@ def _resolve_names(db, proj):
     return resolved, props, types
 
 
+def _write_reports(name: str, source: str, run_date: str, reports_dir: Path,
+                   diff: dict, old_proj, new_proj, group_db) -> None:
+    """Write the dated HTML + JSON reports for one project's diff.
+
+    Site configs namespace the dated report folders by source so the same
+    project name in two sources cannot clobber the other's report."""
+    day_dir = (reports_dir / source / run_date) if source else (reports_dir / run_date)
+    day_dir.mkdir(parents=True, exist_ok=True)
+    (day_dir / f'{name}.json').write_text(
+        json.dumps(diff, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    # Group-db name resolution feeds the HTML report only; the JSON diff
+    # keeps raw ids (its schema is versioned and consumed by pipelines).
+    old_resolved, old_props, old_types = _resolve_names(group_db, old_proj)
+    new_resolved, new_props, new_types = _resolve_names(group_db, new_proj)
+    (day_dir / f'{name}.html').write_text(
+        generate_html_report(old_proj, new_proj, f'{name} (previous)', f'{name} (current)',
+                             old_resolved, new_resolved, old_props, new_props,
+                             old_types, new_types),
+        encoding='utf-8')
+
+
 def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
              run_date: str, conn, reports_dir: Path, dry_run: bool,
              census: dict, source: str = '', group_db=None):
-    """Sync a single project. Returns 'changed', 'new', or 'unchanged'."""
+    """Sync a single project. Returns 'changed', 'new', 'rebuilt',
+    'unchanged', or 'deferred'."""
     name = zip_path.stem
     key = census_key(source, name)
 
     local_zip = staging / zip_path.name
     copy_with_retries(zip_path, local_zip)
+
+    # _triage checked for an Administrator lock before this project reached
+    # the queue, but a user can open a project in the minutes between. Re-check
+    # now that the copy is taken: a lock that appeared during it means the copy
+    # may be a half-written save, and the next run will pick the project up.
+    held = project_lock(zip_path)
+    if held is not None and not _lock_is_stale(held[1], cfg['lock_stale_hours'] * 3600):
+        log.warning('[OPEN] %s -- opened in DriveWorks Administrator while the '
+                    'sync was copying it; deferred to the next run', key)
+        return 'deferred'
 
     new_dir = staging / name
     safe_extract(local_zip, new_dir)
@@ -570,19 +637,44 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     # directory, so is_new stays False and the diff below would compare the
     # rebuild against a stranger -- reporting every element of the old project
     # as removed and every element of the new one as added, which is exactly
-    # the metrics explosion the is_new branch above exists to prevent. Near-zero
-    # overlap means these are not the same project: re-baseline instead.
+    # the metrics explosion the is_new branch above exists to prevent. If
+    # essentially none of the archived project survives, re-baseline instead.
+    #
+    # The test is containment, not similarity: what fraction of the ARCHIVED
+    # project is still there. A Jaccard ratio would answer "how alike are these
+    # two", which is a different question and gets the answer wrong in the one
+    # direction that matters -- a project that keeps every element it had and
+    # grows sixtyfold shares a vanishing fraction of the union, and would be
+    # torn down and re-baselined despite being unmistakably itself.
     old_keys, new_keys = _element_keys(old_proj), _element_keys(new_proj)
-    union = old_keys | new_keys
-    overlap = len(old_keys & new_keys) / len(union) if union else 1.0
+    survived = len(old_keys & new_keys) / len(old_keys) if old_keys else 1.0
     if (len(old_keys) >= cfg['rebuild_min_elements']
-            and overlap <= cfg['rebuild_similarity']):
-        log.warning('[REBUILT] %s -- only %.1f%% element overlap with the '
-                    'archived copy (%d -> %d elements); re-baselining instead '
-                    'of diffing against a stranger',
-                    key, overlap * 100, len(old_keys), len(new_keys))
+            and survived <= cfg['rebuild_similarity']):
+        if len(new_keys) < cfg['rebuild_min_elements']:
+            # Nothing of the old project left AND barely anything in its place.
+            # A truncated copy, a half-written save, or a parser that no longer
+            # understands the file explains this at least as well as a rebuild
+            # does -- and re-baselining would replace a good archive with a bad
+            # copy, silently, for every project on the share. Refuse: the run
+            # exits non-zero, the archive is untouched, a human looks.
+            raise RuntimeError(
+                f'archived copy holds {len(old_keys)} elements, the file on the '
+                f'share parses to {len(new_keys)} and shares none of them -- '
+                'refusing to re-baseline over a good archive; check the source '
+                'file (and this tool\'s parsers against the DriveWorks version)')
+        log.warning('[REBUILT] %s -- only %.1f%% of the archived copy survives '
+                    'in the file on the share (%d -> %d elements); re-baselining '
+                    'instead of diffing against a stranger',
+                    key, survived * 100, len(old_keys), len(new_keys))
         if dry_run:
             return 'rebuilt'
+        # The reports still get written: they are the only record of what the
+        # rebuild replaced. Only record_diff is skipped, and that is the one
+        # thing that would poison the work metrics.
+        rebuild_diff = build_diff(old_proj, new_proj,
+                                  f'{name} (previous)', f'{name} (rebuilt)')
+        _write_reports(name, source, run_date, reports_dir, rebuild_diff,
+                       old_proj, new_proj, group_db)
         shutil.rmtree(repo_dir)
         shutil.copytree(new_dir, repo_dir)
         commit_project(repo, name, f'{name}: rebuilt from scratch, re-baselined '
@@ -597,21 +689,8 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     if dry_run:
         return 'changed'
 
-    # Site configs namespace the dated report folders by source so the same
-    # project name in two sources cannot clobber the other's report.
-    day_dir = (reports_dir / source / run_date) if source else (reports_dir / run_date)
-    day_dir.mkdir(parents=True, exist_ok=True)
-    (day_dir / f'{name}.json').write_text(
-        json.dumps(diff, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-    # Group-db name resolution feeds the HTML report only; the JSON diff
-    # keeps raw ids (its schema is versioned and consumed by pipelines).
-    old_resolved, old_props, old_types = _resolve_names(group_db, old_proj)
-    new_resolved, new_props, new_types = _resolve_names(group_db, new_proj)
-    (day_dir / f'{name}.html').write_text(
-        generate_html_report(old_proj, new_proj, f'{name} (previous)', f'{name} (current)',
-                             old_resolved, new_resolved, old_props, new_props,
-                             old_types, new_types),
-        encoding='utf-8')
+    _write_reports(name, source, run_date, reports_dir, diff,
+                   old_proj, new_proj, group_db)
 
     record_diff(conn, run_date, name, owner, diff, source)
 
@@ -664,6 +743,20 @@ def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
     return missing
 
 
+def _deferral(key: str, zip_path: Path, source_dir: Path, holder: str,
+              age: float) -> dict:
+    """One deferred project, in the shape the attention panel renders.
+    `project` is the census key so it reads the same as a conflict does;
+    `name` is the bare project name, which is what `seen` is keyed by; `holder`
+    is whatever the lock file named, which is usually who to go and ask."""
+    try:
+        rel = zip_path.relative_to(source_dir).as_posix()
+    except ValueError:
+        rel = zip_path.name
+    return {'project': key, 'name': zip_path.stem, 'path': rel,
+            'holder': holder, 'hours': round(age / 3600, 1)}
+
+
 def _triage(zips: list, source_dir: Path, census: dict, errors: list,
             source: str = '', lock_stale_s: float = 0) -> tuple:
     """Apply census dispositions to the discovered files.
@@ -673,10 +766,11 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list,
     sharing a name sync only the census-registered path (or the first, if
     none registered) — the rest are recorded as conflicts for the attention
     panel and as run errors (back-compat with the pre-census duplicate
-    handling). Projects open in Administrator go to `deferred`: still present
-    on the share, just not worth archiving mid-edit. A lock older than
-    `lock_stale_s` is treated as abandoned and its project synced anyway, so a
-    session that died without cleaning up cannot defer a project forever."""
+    handling). Projects open in Administrator go to `deferred` (as the dicts
+    _deferral builds, for the attention panel): still present on the share,
+    just not worth archiving mid-edit. A lock older than `lock_stale_s` is
+    treated as abandoned and its project synced anyway, so a session that died
+    without cleaning up cannot defer a project forever."""
     by_name = {}
     for z in zips:
         by_name.setdefault(z.stem, []).append(z)
@@ -716,7 +810,7 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list,
         if held is not None:
             holder, age = held
             who = f'{holder}, ' if holder else ''
-            if 0 < lock_stale_s <= age:
+            if _lock_is_stale(age, lock_stale_s):
                 log.warning('[STALE LOCK] %s -- lock (%s%.1fh old) looks '
                             'abandoned; syncing anyway and leaving the lock '
                             'file alone for DriveWorks to clear',
@@ -725,7 +819,7 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list,
                 log.warning('[OPEN] %s -- open in DriveWorks Administrator '
                             '(%s%.1fh); deferred to the next run',
                             key, who, age / 3600)
-                deferred.append(chosen)
+                deferred.append(_deferral(key, chosen, source_dir, holder, age))
                 continue
         to_sync.append(chosen)
 
@@ -735,7 +829,7 @@ def _triage(zips: list, source_dir: Path, census: dict, errors: list,
 def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
                 run_date: str, reports_dir: Path, dry_run: bool,
                 counts: dict, errors: list) -> tuple:
-    """Sync one named source. Returns (files_found, conflicts)."""
+    """Sync one named source. Returns (files_found, conflicts, deferred)."""
     label = sname or 'source'
     excluded = []
     zips = find_projects(scfg['source_dir'], scfg['recursive'],
@@ -753,14 +847,11 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
         lock_stale_s=cfg['lock_stale_hours'] * 3600)
     if ignored:
         log.info('[%s] %d project(s) skipped as census-ignored', label, ignored)
-    if deferred:
-        log.info('[%s] %d project(s) deferred as open in Administrator',
-                 label, len(deferred))
-        counts['deferred'] += len(deferred)
+    counts['deferred'] += len(deferred)
     # Deferred projects are still on the share, so they belong in `seen`:
     # without this a project that happened to be open at sync time would be
     # recorded as removed and, once closed, re-added as new.
-    seen = {z.stem for z in to_sync} | {z.stem for z in deferred}
+    seen = {z.stem for z in to_sync} | {d['name'] for d in deferred}
 
     staging_root = Path(tempfile.mkdtemp(prefix='projx_sync_'))
     group_db = None if dry_run else open_group_db(scfg)
@@ -773,6 +864,12 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
                                    cfg, run_date, conn, reports_dir, dry_run,
                                    census, sname, group_db=group_db)
                 counts[outcome] += 1
+                if outcome == 'deferred':
+                    # Opened while the sync was copying it (see sync_one). It
+                    # is already in `seen`, it just needs to reach the panel.
+                    held = project_lock(zip_path) or ('', 0.0)
+                    deferred.append(_deferral(census_key(sname, zip_path.stem),
+                                              zip_path, scfg['source_dir'], *held))
             except Exception as e:
                 log.exception('[ERROR] %s: %s', zip_path.name, e)
                 errors.append(f'{zip_path.name}: {e}')
@@ -781,9 +878,13 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
         if group_db is not None:
             group_db.close()
 
+    if deferred:
+        log.info('[%s] %d project(s) deferred as open in Administrator',
+                 label, len(deferred))
+
     handle_missing(seen, scfg['archive_repo'], cfg, run_date, conn, dry_run,
                    census, sname)
-    return len(zips), conflicts
+    return len(zips), conflicts, deferred
 
 
 def run(cfg: dict, dry_run: bool) -> int:
@@ -804,9 +905,9 @@ def run(cfg: dict, dry_run: bool) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     reports_dir = data_dir / 'reports'
 
-    # One run at a time; a crashed run's lock goes stale after LOCK_STALE_S.
+    # One run at a time; a crashed run's lock goes stale after RUN_LOCK_STALE_S.
     lock = data_dir / 'sync.lock'
-    if lock.exists() and time.time() - lock.stat().st_mtime < LOCK_STALE_S:
+    if lock.exists() and time.time() - lock.stat().st_mtime < RUN_LOCK_STALE_S:
         log.error('another sync appears to be running (lock: %s) -- aborting', lock)
         return 3
     lock.write_text(str(started), encoding='utf-8')
@@ -829,6 +930,7 @@ def run(cfg: dict, dry_run: bool) -> int:
                   'rebuilt': 0, 'deferred': 0}
         errors = []
         all_conflicts = []
+        all_deferred = []
         total_found = 0
 
         for sname, scfg in sources.items():
@@ -839,21 +941,27 @@ def run(cfg: dict, dry_run: bool) -> int:
                               f'({scfg["source_dir"]})')
                 continue
             ensure_repo(scfg['archive_repo'], cfg)
-            found, conflicts = _run_source(sname, scfg, cfg, census, conn,
-                                           run_date, reports_dir, dry_run,
-                                           counts, errors)
+            found, conflicts, deferred = _run_source(sname, scfg, cfg, census,
+                                                     conn, run_date, reports_dir,
+                                                     dry_run, counts, errors)
             total_found += found
             all_conflicts.extend(conflicts)
+            all_deferred.extend(deferred)
 
         census['conflicts'] = all_conflicts
+        # Deferrals are this run's state, not a standing decision: each run
+        # replaces the list wholesale, so a project that closed overnight
+        # drops off the panel by itself.
+        census['deferred'] = all_deferred
 
         pending = census_mod.pending_projects(census)
         unmapped = census_mod.unmapped_users(census)
-        if pending or unmapped or census['conflicts']:
+        if pending or unmapped or census['conflicts'] or census['deferred']:
             log.info('needs attention: %d pending project(s), %d unmapped user(s), '
-                     '%d name conflict(s) -- resolve in Projx Diff > Tools > '
-                     'Manage Nightly Sync', len(pending), len(unmapped),
-                     len(census['conflicts']))
+                     '%d name conflict(s), %d deferred as open -- resolve in '
+                     'Projx Diff > Tools > Manage Nightly Sync',
+                     len(pending), len(unmapped), len(census['conflicts']),
+                     len(census['deferred']))
 
         if not dry_run:
             if census_mod.snapshot(census) != census_before:

@@ -33,20 +33,31 @@ exe is windowed, so there is no console output; everything goes to
    another machine. A lock older than `lock_stale_hours` (default 6) is
    treated as abandoned and the project syncs anyway, so a session that
    exited uncleanly cannot defer a project forever. Set it to `0` to defer
-   for as long as any lock is present.
+   for as long as any lock is present. Deferred projects are listed on the
+   dashboard and in Manage Nightly Sync, so "why didn't that one sync?" has
+   an answer without reading the log. The check runs again after the file is
+   copied, so a project opened mid-sync is deferred too.
 3. Copies each file to local staging (3 attempts, 10s apart) and extracts it.
 4. Compares extracted content (by file hash) against the archive repo:
    - **Unchanged** — nothing happens. No commit, no rows, no reports.
    - **New** — added to the archive with a `<name>: added to archive` commit
      and a single project-level "added" event (never diffed against nothing,
      which would poison the metrics).
-   - **Rebuilt** — the file shares a name with the archived copy but almost
-     none of its content (overlap at or below `rebuild_similarity`, default
-     5%, once the archived copy has at least `rebuild_min_elements`, default
-     25). That is a project deleted and rebuilt under its old name, not an
-     edit, so it is re-baselined with a `rebuilt` event instead of being
-     diffed against its predecessor — which would report every element of
-     both projects as churn.
+   - **Rebuilt** — almost none of the *archived* project survives in the file
+     on the share (at or below `rebuild_similarity` of it, default 5%, once
+     the archived copy has at least `rebuild_min_elements`, default 25). That
+     is a project deleted and rebuilt under its old name, not an edit, so it
+     is re-baselined with a `rebuilt` event instead of being diffed against
+     its predecessor — which would report every element of both projects as
+     churn. The HTML + JSON reports are still written (they are the only
+     record of what the rebuild replaced); only the metrics rows are skipped.
+     Note this measures survival, not resemblance: a project that keeps
+     everything it had and grows tenfold is still itself, and is diffed
+     normally. If nothing survives *and* the new file parses to fewer than
+     `rebuild_min_elements`, the sync refuses to touch that project and
+     reports an error — a truncated copy or a parser that no longer
+     understands the file explains that at least as well as a rebuild does,
+     and re-baselining would replace a good archive with a bad copy.
    - **Changed** — a semantic diff is built; HTML + JSON reports land in
      `data_dir/reports/<date>/`; per-category counts and per-element rows are
      inserted into `data_dir/metrics.sqlite`; the new state is committed as

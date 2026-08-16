@@ -469,3 +469,146 @@ def test_lock_ageing_can_be_disabled(site):
     assert _run(site) == 0
     archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
     assert '999' not in archived          # still deferred, however old the lock
+
+
+def test_growth_that_keeps_everything_is_not_a_rebuild(site):
+    """The guard asks how much of the ARCHIVED project survived, not how alike
+    the two copies are. A project that keeps every element it had and grows
+    sixtyfold shares a vanishing fraction of the union of the two — a
+    similarity ratio would tear it down and re-baseline it."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'V{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    grown = {f'V{i}': f'={i}' for i in range(30)}
+    grown.update({f'N{i}': f'={i}' for i in range(2000)})
+    _write_projx(site['source'] / 'Gamma.driveprojx', grown)
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        statuses = [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma' ORDER BY id")]
+        assert statuses == ['added']          # diffed as the edit it is
+        assert db.execute("SELECT SUM(added) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] == 2000
+
+
+def test_archive_is_never_rebaselined_over_by_an_unreadable_copy(site):
+    """Nothing of the old project left AND nothing much in its place is at
+    least as likely to be a truncated copy or a parser that no longer
+    understands the file as it is a rebuild. Re-baselining there would replace
+    a good archive with a bad copy, silently, for every project on the share."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'V{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    _write_projx(site['source'] / 'Gamma.driveprojx', {})
+    assert _run(site) == 1                    # refused, and the run says so
+
+    archived = (site['repo'] / 'Gamma' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert 'V0' in archived                   # archive untouched
+    with _db(site) as db:
+        assert [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma'")] == ['added']
+
+
+def test_small_archive_is_diffed_not_treated_as_a_rebuild(site):
+    """Below rebuild_min_elements the ratio is meaningless — a two-variable
+    project sharing nothing with its archived copy is an ordinary edit."""
+    _write_projx(site['source'] / 'Gamma.driveprojx', {'A': '=1', 'B': '=2'})
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Gamma.driveprojx', {'C': '=3', 'D': '=4'})
+    assert _run(site) == 0
+
+    with _db(site) as db:
+        assert [r[0] for r in db.execute(
+            "SELECT status FROM element_changes WHERE category='project' "
+            "AND project='Gamma'")] == ['added']
+        assert db.execute("SELECT COUNT(*) FROM category_changes "
+                          "WHERE project='Gamma'").fetchone()[0] == 1
+
+
+def test_rebuild_still_writes_its_reports(site):
+    """Skipping record_diff keeps the work metrics clean; skipping the reports
+    would leave no record at all of what the rebuild replaced."""
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'Old{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Gamma.driveprojx',
+                 {f'New{i}': f'={i}' for i in range(30)})
+    assert _run(site) == 0
+
+    day = sorted((site['data'] / 'reports').iterdir())[-1]
+    assert (day / 'Gamma.html').is_file()
+    report = json.loads((day / 'Gamma.json').read_text(encoding='utf-8'))
+    assert report['summary']['added'] == 30 and report['summary']['removed'] == 30
+
+
+def test_deferred_projects_reach_the_attention_panel(site):
+    from dw_compare import dashboard
+
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
+    (site['source'] / 'Alpha.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
+    assert _run(site) == 0
+
+    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
+    assert [d['project'] for d in census['deferred']] == ['Alpha']
+    assert census['deferred'][0]['holder'] == 'jsmith|WS-04'
+
+    html = dashboard._attention_html(census)
+    assert 'open in Administrator' in html and 'jsmith|WS-04' in html
+
+    # It clears itself once the project is closed — not a standing decision.
+    (site['source'] / 'Alpha.~driveproj').unlink()
+    assert _run(site) == 0
+    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
+    assert census['deferred'] == []
+
+
+def test_duplicate_name_still_conflicts_when_the_chosen_file_is_locked(site):
+    """Deferral happens after the name-collision check, so an open project
+    does not quietly swallow the conflict its twin should raise."""
+    _write_projx(site['source'] / 'Dup.driveprojx', {'A': '=1'})
+    _write_projx(site['source'] / 'nested' / 'Dup.driveprojx', {'B': '=2'})
+    (site['source'] / 'Dup.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
+
+    assert _run(site) == 1                    # the duplicate is a run error
+
+    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
+    assert [c['path'] for c in census['conflicts']] == ['nested/Dup.driveprojx']
+    assert [d['project'] for d in census['deferred']] == ['Dup']
+    assert not (site['repo'] / 'Dup').exists()   # neither copy was archived
+
+
+@pytest.mark.parametrize('key, bad', [
+    ('rebuild_similarity', '5%'),
+    ('rebuild_similarity', 1.5),
+    ('rebuild_min_elements', 'lots'),
+    ('lock_stale_hours', True),
+    ('lock_stale_hours', -1),
+])
+def test_bad_tuning_values_fail_at_load_not_at_2am(site, key, bad):
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg[key] = bad
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+    with pytest.raises(SystemExit) as exc:
+        nightly_sync.load_config(site['cfg_path'])
+    assert key in str(exc.value)
+
+
+def test_numeric_tuning_strings_are_coerced(site):
+    """A hand-edited config quoting its numbers is a typo, not an error —
+    but it has to become a number here, because `"6" * 3600` is 3600 copies
+    of "6" and the TypeError would land an hour into the night."""
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg.update({'lock_stale_hours': '6', 'rebuild_similarity': '0.05',
+                'rebuild_min_elements': '25'})
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+
+    loaded = nightly_sync.load_config(site['cfg_path'])
+    assert loaded['lock_stale_hours'] == 6
+    assert loaded['rebuild_similarity'] == 0.05
+    assert loaded['rebuild_min_elements'] == 25

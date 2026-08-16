@@ -13,10 +13,22 @@ and the project uses [Semantic Versioning](https://semver.org/).
   directory, so the nightly sync treated the rebuild as an edit and reported
   every element of the old project as removed and every element of the new
   one as added — a one-off explosion in the work metrics, the exact thing the
-  first-appearance path already guards against. The sync now compares element
-  identity against the archived copy; at or below `rebuild_similarity`
-  (default 5%, applied once the archive holds `rebuild_min_elements`, default
-  25) the project is re-baselined and recorded as `rebuilt` instead.
+  first-appearance path already guards against. The sync now measures how much
+  of the *archived* project survives in the file on the share; at or below
+  `rebuild_similarity` of it (default 5%, applied once the archive holds
+  `rebuild_min_elements`, default 25) the project is re-baselined and recorded
+  as `rebuilt` instead. Survival, not resemblance: a project that keeps every
+  element it had and grows tenfold is unmistakably itself and is diffed
+  normally. The rebuild's HTML + JSON reports are still written — they are the
+  only record of what it replaced — and only the metrics rows are skipped.
+- **A bad copy can no longer overwrite a good archive.** If nothing of the
+  archived project survives *and* the file on the share parses to fewer than
+  `rebuild_min_elements`, the sync now refuses to re-baseline that project and
+  reports an error instead. A truncated copy, a half-written save, or a parser
+  that no longer understands the file explains that at least as well as a
+  rebuild does — and left unguarded, a DriveWorks version this tool cannot
+  read would have silently re-baselined every project on the share in one
+  night.
 
 ### Added
 
@@ -28,6 +40,20 @@ and the project uses [Semantic Versioning](https://semver.org/).
   project, and on a shared site it usually belongs to another user on another
   machine. Locks older than `lock_stale_hours` (default 6, `0` to disable)
   are treated as abandoned so an unclean exit cannot defer a project forever.
+  The lock is checked again after the file is copied, so a project opened
+  mid-sync is deferred too.
+- **Deferred projects are listed on the dashboard and in Manage Nightly
+  Sync**, with whoever the lock names, so "why didn't that one sync?" has an
+  answer without reading the log. The list is this run's state, not a standing
+  decision: a project closed overnight drops off by itself.
+
+### Changed
+
+- The nightly sync's numeric settings (`rebuild_similarity`,
+  `rebuild_min_elements`, `lock_stale_hours`) are coerced and range-checked
+  when the config loads, so a hand-edited `"6"` works and a `"lots"` fails
+  with a message naming the key — rather than as a `TypeError` an hour into
+  the night.
 
 ## [1.7.1] - 2026-08-06
 
