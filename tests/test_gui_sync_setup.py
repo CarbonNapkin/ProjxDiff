@@ -844,3 +844,58 @@ def test_plain_registration_refuses_a_foreign_command_too(monkeypatch):
         f'"{sys.executable}" --sync "C:\\ProjxArchive\\config.json"') is True
     assert gui_mod._SyncManager._command_is_ours('') is False
     assert gui_mod._SyncManager._command_is_ours(None) is False
+
+
+def test_help_explains_the_nightly_archive_and_triage():
+    """The nightly half is the part people need explained: what the archive
+    actually is, what a run does, and what New/Track/Ignore mean."""
+    root, app = _make_app()
+    try:
+        app._show_help()
+        blob = ' '.join(_dialog_texts(root))
+        # The repo idea — the archive is a git repo they own, not a black box.
+        assert 'git repository' in blob
+        assert 'authored to the DriveWorks user who last saved' in blob
+        # How a run works, including the cases that are not a plain diff.
+        assert 'Unchanged projects do nothing at all' in blob
+        assert 'Rebuilt' in blob and 're-baselined' in blob
+        assert '.~driveproj' in blob
+        # Triage vocabulary must match the manager's own labels.
+        assert 'All / New / Track / Ignore' in blob
+        assert 'heals past metrics retroactively' in blob
+        # The windowed-exe gotcha (#9) — documented until it is fixed.
+        assert 'prints nothing to the console' in blob
+    finally:
+        root.destroy()
+
+
+def test_help_scrolls_instead_of_growing_off_screen():
+    """REGRESSION GUARD: the dialog sizes itself to its content and is
+    centred, so an uncapped help runs off the top and bottom of a laptop
+    screen with the Close button out of reach."""
+    import tkinter as tk
+    gui_mod._save_setting('enable_db', True)      # longest variant
+    root, app = _make_app()
+    try:
+        app._show_help()
+        top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+        canvases = []
+
+        def walk(w):
+            for child in w.winfo_children():
+                if isinstance(child, tk.Canvas):
+                    canvases.append(child)
+                walk(child)
+        walk(top)
+
+        assert canvases, 'help body is not scrollable'
+        canvas = canvases[0]
+        top.update_idletasks()
+        assert int(canvas.cget('height')) <= app._HELP_MAX_BODY_H
+        # And the other axis: a Canvas does not propagate its content's
+        # requested width, so the dialog shrinks and clips the text unless
+        # the width is set explicitly — there is no horizontal scrolling.
+        inner = canvas.winfo_children()[0]
+        assert top.winfo_reqwidth() >= inner.winfo_reqwidth(), 'help text is clipped'
+    finally:
+        root.destroy()
