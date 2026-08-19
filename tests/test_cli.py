@@ -344,3 +344,31 @@ def test_unconfigured_side_is_silent_no_op(monkeypatch):
     result = cli.resolve_side_names('old', _db_args(old_db_server=''), index=None)
     assert result == ({}, {}, {}, None)
     assert seen == {}  # resolve_db_names never called
+
+
+# ------------------------------------------------------- packaged entry ----
+
+def _entry_point():
+    """Import run_dw_compare.py (the PyInstaller entry script) by path — it
+    lives at the repo root, not in the package."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'run_dw_compare.py'
+    spec = importlib.util.spec_from_file_location('_run_dw_compare_probe', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize('exe, is_cli', [
+    (r'C:\Program Files\Projx Diff\ProjxDiff-cli.exe', True),
+    (r'C:\Program Files\Projx Diff\ProjxDiff.exe', False),
+    ('/usr/local/bin/python3', False),
+])
+def test_the_console_build_is_recognised_by_its_own_filename(monkeypatch, exe, is_cli):
+    """The two Windows exes are one build differing only in subsystem, so the
+    only thing the running process can tell them apart by is its own name. A
+    bare ProjxDiff.exe means a double-click and should open the GUI; a bare
+    ProjxDiff-cli.exe means someone at a prompt, and should not."""
+    mod = _entry_point()
+    monkeypatch.setattr(sys, 'executable', exe)
+    assert mod._is_cli_build() is is_cli

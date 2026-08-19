@@ -501,7 +501,11 @@ class CompareApp:
              'doing it late.\n'
              'Name conflicts — two files claiming one project name. Only the '
              'registered path syncs; rename or exclude the other copy.\n\n'
-             'Command-line equivalents: --sync, --census, --dashboard.')
+             'Command-line equivalents: --sync, --census, --dashboard. Run '
+             'these with ProjxDiff-cli.exe (beside ProjxDiff.exe in the '
+             'install folder) — that copy writes to the terminal it was '
+             'launched from; ProjxDiff.exe is windowed and prints nothing. '
+             'ProjxDiff-cli.exe --doctor reports which build is installed.')
 
         # Only shown when the deployment has opted into the database
         # surface — everyone else never sees these controls, so no help

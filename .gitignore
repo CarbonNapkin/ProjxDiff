@@ -7,7 +7,7 @@ __pycache__/
 # PyInstaller build artifacts
 build/
 dist/
-build_version_info.txt
+build_version_info*.txt
 
 # macOS
 .DS_Store

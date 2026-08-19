@@ -15,9 +15,17 @@ py -3 -m dw_compare --census C:\ProjxArchive\config.json
 py -3 -m dw_compare --dashboard C:\ProjxArchive\config.json
 ```
 
-A packaged build works too (`ProjxDiff.exe --sync config.json`) — note the
-exe is windowed, so there is no console output; everything goes to
-`data_dir\sync.log` and the exit code still reaches Task Scheduler.
+A packaged build works too. The installed folder holds two copies of the
+app, the `python.exe`/`pythonw.exe` split:
+
+| | |
+|---|---|
+| `ProjxDiff.exe` | Windowed. What the Start Menu shortcut and the scheduled task run. Launched from a terminal it detaches and prints **nothing**; output still reaches `data_dir\sync.log` and the exit code still reaches Task Scheduler. |
+| `ProjxDiff-cli.exe` | Console. Same app, same flags — use this one by hand: `ProjxDiff-cli.exe --sync config.json`, `ProjxDiff-cli.exe --doctor`. Its output can be piped, redirected and waited on. |
+
+`--doctor` prints the running version, whether it is a frozen build, and
+whether `pyodbc` and the SQL Server ODBC drivers are present — the quickest
+way to confirm which build an installed copy actually is.
 
 ## What one run does
 

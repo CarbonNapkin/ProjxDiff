@@ -84,6 +84,7 @@ jobs:
           $env:PROJX_ONEDIR = '1'
           python -m PyInstaller dw_compare.spec --clean --noconfirm
           if (-not (Test-Path "dist\ProjxDiff-app\ProjxDiff.exe")) { Write-Error "onedir build missing"; exit 1 }
+          if (-not (Test-Path "dist\ProjxDiff-app\ProjxDiff-cli.exe")) { Write-Error "console CLI exe missing"; exit 1 }
 
       # Run the actual built binary through a real --sync against a tiny fake
       # site. Catches packaging breaks (missing hidden imports, bootloader
@@ -110,6 +111,24 @@ jobs:
           if (-not (Test-Path "smoke-onedir\repo\Smoke")) { Write-Error "onedir: project not archived"; exit 1 }
           $od = Start-Process -FilePath "dist\ProjxDiff-app\ProjxDiff.exe" -ArgumentList "--doctor" -Wait -PassThru -NoNewWindow
           if ($od.ExitCode -ne 0) { Write-Error "onedir doctor check failed"; exit 1 }
+          # The console-subsystem twin is the whole point of ProjxDiff-cli.exe:
+          # it must WRITE to the terminal it was launched from, and it must be
+          # capturable. The checks above pass on a windowed exe that prints
+          # nothing at all, which is exactly the bug this ships to fix, so
+          # assert on the captured text rather than the exit code.
+          $version = (Select-String -Path dw_compare/_version.py -Pattern "__version__\s*=\s*'([^']+)'").Matches[0].Groups[1].Value
+          $out = (& "dist\ProjxDiff-app\ProjxDiff-cli.exe" --doctor 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { Write-Error "cli doctor exited $LASTEXITCODE"; exit 1 }
+          Write-Host $out
+          if ($out -notmatch [regex]::Escape("Projx Diff $version")) {
+            Write-Error "ProjxDiff-cli.exe --doctor produced no usable output on the console"; exit 1
+          }
+          if ($out -notmatch 'frozen binary') { Write-Error "cli exe is not the frozen build"; exit 1 }
+          # ...and when redirected, which AttachConsole would not survive.
+          & "dist\ProjxDiff-app\ProjxDiff-cli.exe" --doctor > cli-doctor.txt 2>&1
+          if (-not (Select-String -Path cli-doctor.txt -Pattern ([regex]::Escape("Projx Diff $version")) -Quiet)) {
+            Write-Error "ProjxDiff-cli.exe output could not be redirected to a file"; exit 1
+          }
 
       - name: Smoke test binary (macOS)
         if: matrix.target_name == 'macos'
@@ -147,10 +166,66 @@ jobs:
           $p = Start-Process -FilePath "dist\ProjxDiff-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\ProjxDiffInstallTest" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Error "silent install failed"; exit 1 }
           if (-not (Test-Path "C:\ProjxDiffInstallTest\ProjxDiff.exe")) { Write-Error "installed exe missing"; exit 1 }
+          if (-not (Test-Path "C:\ProjxDiffInstallTest\ProjxDiff-cli.exe")) { Write-Error "installed CLI exe missing"; exit 1 }
+          $iv = (& "C:\ProjxDiffInstallTest\ProjxDiff-cli.exe" --doctor 2>&1 | Out-String)
+          Write-Host $iv
+          if ($iv -notmatch 'Projx Diff') { Write-Error "installed CLI exe printed nothing"; exit 1 }
           python scripts/make_smoke_site.py smoke-installed
           $q = Start-Process -FilePath "C:\ProjxDiffInstallTest\ProjxDiff.exe" -ArgumentList "--sync","smoke-installed\config.json" -Wait -PassThru -NoNewWindow
           Get-Content smoke-installed\data\sync.log -ErrorAction SilentlyContinue
           if ($q.ExitCode -ne 0) { Write-Error "installed exe failed to sync"; exit 1 }
+
+      # #7 in CI: the failure was an upgrade silently leaving the nightly task
+      # pointing at the old binary. Stage exactly that -- a task naming a
+      # ProjxDiff.exe somewhere else -- and prove the installer repoints it
+      # without disturbing the schedule or the config path. Then prove it
+      # refuses a command that is not ours, which is the guard that keeps this
+      # from becoming the 2026-08-16 incident in installer form.
+      - name: Installer repoints a stale nightly task (Windows)
+        if: matrix.target_name == 'windows'
+        shell: pwsh
+        run: |
+          $task = 'ProjxDiff Nightly Sync'
+          $stale = 'C:\Program Files (x86)\Projx Diff\ProjxDiff.exe'
+          $args  = '--sync "C:\ProjxArchive\config.json"'
+          schtasks /Create /F /TN $task /TR "`"$stale`" $args" /SC DAILY /ST 02:00 /RU SYSTEM /RL HIGHEST
+          if ($LASTEXITCODE -ne 0) { Write-Error "could not stage the task"; exit 1 }
+
+          $p = Start-Process -FilePath "dist\ProjxDiff-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\ProjxDiffInstallTest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "reinstall failed"; exit 1 }
+
+          $a = (Get-ScheduledTask -TaskName $task).Actions[0]
+          Write-Host "after install: $($a.Execute) $($a.Arguments)"
+          if ($a.Execute -ne 'C:\ProjxDiffInstallTest\ProjxDiff.exe') {
+            Write-Error "task was not repointed at the new install"; exit 1
+          }
+          if ($a.Arguments -notmatch 'ProjxArchive') {
+            Write-Error "the site's config path was not preserved"; exit 1
+          }
+          $t = Get-ScheduledTask -TaskName $task
+          if ($t.Triggers[0].StartBoundary -notmatch 'T02:00') {
+            Write-Error "the schedule was not preserved"; exit 1
+          }
+
+          # A command that is not a Projx Diff executable belongs to something
+          # else. Leave it exactly as found.
+          schtasks /Create /F /TN $task /TR "x" /SC DAILY /ST 02:00 /RU SYSTEM /RL HIGHEST
+          $p = Start-Process -FilePath "dist\ProjxDiff-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\ProjxDiffInstallTest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "reinstall failed"; exit 1 }
+          $a = (Get-ScheduledTask -TaskName $task).Actions[0]
+          Write-Host "after install (foreign command): $($a.Execute)"
+          if ($a.Execute -ne 'x') { Write-Error "installer rewrote a task that is not ours"; exit 1 }
+
+          schtasks /Delete /F /TN $task
+
+          # And with no task at all it must stay that way -- an installer that
+          # invents a nightly job on a machine that never asked for one is not
+          # a repair.
+          $p = Start-Process -FilePath "dist\ProjxDiff-setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\ProjxDiffInstallTest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "reinstall failed"; exit 1 }
+          if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
+            Write-Error "installer created a nightly task out of nothing"; exit 1
+          }
 
       - name: Upload installer artifact
         if: matrix.target_name == 'windows'
