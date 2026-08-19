@@ -36,3 +36,35 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+  installer:
+    # The Inno script carries a Pascal [Code] section now (stale 32-bit
+    # cleanup, nightly-task verification). Nothing else in CI compiles it
+    # until a release tag, and a syntax error there would surface as a failed
+    # release build rather than a failed PR. Compile it on every change.
+    name: Compile installer script
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      # ISCC needs the payload to exist, not to be real: this job proves the
+      # script compiles, not that the app works. The release workflow builds
+      # and installs the genuine article.
+      - name: Stage a placeholder payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\ProjxDiff-app\_internal | Out-Null
+          Set-Content dist\ProjxDiff-app\ProjxDiff.exe 'placeholder'
+          Set-Content dist\ProjxDiff-app\ProjxDiff-cli.exe 'placeholder'
+          Set-Content dist\ProjxDiff-app\_internal\placeholder.txt 'placeholder'
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path dw_compare/_version.py -Pattern "__version__\s*=\s*'([^']+)'").Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$version scripts\installer\ProjxDiff.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "installer script failed to compile"; exit 1 }
+

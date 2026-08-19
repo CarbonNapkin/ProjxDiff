@@ -475,11 +475,12 @@ class CompareApp:
              'of the archived project survives, so it is re-baselined rather '
              'than diffed, which would otherwise report the whole of both '
              'projects as churn.\n'
-             'Open in Administrator — a "<name>.~driveproj" lock sits beside '
-             'the file, so it is left alone until the next run instead of '
-             'being archived mid-edit. It is never mistaken for a project '
-             'that vanished, and the lock is never deleted — it is what stops '
-             'a second person opening the project.\n'
+             'Open in Administrator — archived anyway. The file on the share '
+             'is the last save, not a live document, so waiting gains nothing '
+             'and a lock left behind by a crashed session would freeze the '
+             'project out of the archive indefinitely. The run notes who had '
+             'it open; the "<name>.~driveproj" lock itself is never touched, '
+             'as it is what stops a second person opening the project.\n'
              'Gone from the share — recorded once, not every night after, and '
              'kept in the archive unless you have asked for removals.')
 
@@ -499,10 +500,12 @@ class CompareApp:
              'Mapping heals past metrics retroactively, so nothing is lost by '
              'doing it late.\n'
              'Name conflicts — two files claiming one project name. Only the '
-             'registered path syncs; rename or exclude the other copy.\n'
-             'Not synced last run — projects that were open in Administrator. '
-             'Nothing to do; they sync themselves once closed.\n\n'
-             'Command-line equivalents: --sync, --census, --dashboard.')
+             'registered path syncs; rename or exclude the other copy.\n\n'
+             'Command-line equivalents: --sync, --census, --dashboard. Run '
+             'these with ProjxDiff-cli.exe (beside ProjxDiff.exe in the '
+             'install folder) — that copy writes to the terminal it was '
+             'launched from; ProjxDiff.exe is windowed and prints nothing. '
+             'ProjxDiff-cli.exe --doctor reports which build is installed.')
 
         # Only shown when the deployment has opted into the database
         # surface — everyone else never sees these controls, so no help
@@ -1754,25 +1757,6 @@ class _SyncManager:
             for c in conflicts:
                 tk.Label(wrap, text=f'· {c.get("project", "")}: {c.get("path", "")}  '
                                     f'(registered: {c.get("registered", "")})',
-                         bg=_SM_BG, fg=_SM_MUTED, anchor='w', wraplength=880,
-                         justify='left').pack(fill='x')
-
-        # Nothing to resolve here — a project open in Administrator syncs by
-        # itself once it is closed. It is listed so "why didn't it sync?" has
-        # an answer without going to the log.
-        deferred = self.census.get('deferred', [])
-        if deferred:
-            tk.Label(wrap, text=f'NOT SYNCED LAST RUN ({len(deferred)})', bg=_SM_BG,
-                     fg=_SM_MUTED, anchor='w',
-                     font=('TkDefaultFont', 8, 'bold')).pack(fill='x', pady=(8, 2))
-            tk.Label(wrap, text='Open in DriveWorks Administrator at sync time, so it was '
-                                'left alone rather than archived mid-edit. These sync on '
-                                'the next run once closed.',
-                     bg=_SM_BG, fg=_SM_MUTED, anchor='w', justify='left',
-                     wraplength=880).pack(fill='x')
-            for d in deferred:
-                held = f'  (held by {d["holder"]})' if d.get('holder') else ''
-                tk.Label(wrap, text=f'· {d.get("project", "")}{held}',
                          bg=_SM_BG, fg=_SM_MUTED, anchor='w', wraplength=880,
                          justify='left').pack(fill='x')
 

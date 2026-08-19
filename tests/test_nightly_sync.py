@@ -73,6 +73,11 @@ def _db(site):
     return sqlite3.connect(site['data'] / 'metrics.sqlite')
 
 
+def _run_rows(site):
+    with _db(site) as db:
+        return db.execute('SELECT COUNT(*) FROM runs').fetchone()[0]
+
+
 def test_full_nightly_lifecycle(site):
     # --- Night 1: everything is new -------------------------------------
     assert _run(site) == 0
@@ -409,36 +414,29 @@ def test_ordinary_edit_is_still_diffed_not_mistaken_for_a_rebuild(site):
                           "WHERE project='Gamma'").fetchone()[0] > 0
 
 
-def test_project_open_in_admin_is_deferred_not_synced(site):
+def test_project_open_in_admin_is_archived_anyway(site, caplog):
+    """The .driveprojx on the share is the last SAVED state, so an open
+    project has nothing half-written about it. It syncs, and the run says who
+    had it open so an odd diff can be traced back."""
     assert _run(site) == 0                        # night 1: both archived
 
     _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
-    (site['source'] / 'Alpha.~driveproj').write_text('', encoding='utf-8')
-    assert _run(site) == 0
+    (site['source'] / 'Alpha.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
+    with caplog.at_level('INFO', logger='nightly_sync'):
+        assert _run(site) == 0
 
     archived = site['repo'] / 'Alpha' / 'driveProj' / 'project.xml'
-    assert '999' not in archived.read_text(encoding='utf-8')   # mid-edit state not captured
+    assert '999' in archived.read_text(encoding='utf-8')
     with _db(site) as db:
         assert db.execute("SELECT COUNT(*) FROM category_changes "
-                          "WHERE project='Alpha'").fetchone()[0] == 0
-        # An open project is present, not missing: it must not be marked removed
-        # (and then re-added as new once the user closes it).
-        statuses = [r[0] for r in db.execute(
-            "SELECT status FROM element_changes WHERE category='project' "
-            "AND project='Alpha'")]
-        assert statuses == ['added']
-
-    # Closed again: the edit syncs normally on the next run.
-    (site['source'] / 'Alpha.~driveproj').unlink()
-    assert _run(site) == 0
-    assert '999' in archived.read_text(encoding='utf-8')
+                          "WHERE project='Alpha'").fetchone()[0] > 0
+    assert any('[OPEN]' in r.getMessage() and 'jsmith|WS-04' in r.getMessage()
+               for r in caplog.records)
 
 
-def test_abandoned_lock_stops_deferring_and_is_never_deleted(site):
-    """A session that exits uncleanly leaves its lock behind. Past
-    lock_stale_hours the project must sync anyway -- but the lock file belongs
-    to DriveWorks (and often to another user on another machine), so we leave
-    it exactly where it is."""
+def test_the_lock_file_is_never_deleted(site):
+    """The sidecar belongs to DriveWorks -- and usually to another user on
+    another machine. Removing it risks two concurrent editors."""
     assert _run(site) == 0
 
     _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
@@ -449,26 +447,28 @@ def test_abandoned_lock_stops_deferring_and_is_never_deleted(site):
 
     assert _run(site) == 0
     archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
-    assert '999' in archived              # synced despite the lock
+    assert '999' in archived              # synced regardless of the lock
     assert lock.exists()                  # never ours to delete
 
 
-def test_lock_ageing_can_be_disabled(site):
-    """lock_stale_hours=0 keeps the old behaviour: defer while any lock exists."""
+def test_a_retired_lock_stale_hours_is_inert_and_says_so(site, caplog):
+    """REGRESSION: a live config still carries lock_stale_hours. It must not
+    fail the load, must not defer anything, and must not be silently dropped
+    -- a site believing a knob is protecting it is worse than either."""
     cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
-    cfg['lock_stale_hours'] = 0
+    cfg['lock_stale_hours'] = 0           # the old "defer while any lock exists"
     site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
     assert _run(site) == 0
 
     _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
     lock = site['source'] / 'Alpha.~driveproj'
     lock.write_text('Ghost|DEAD-PC', encoding='utf-8')
-    stale = time.time() - 48 * 3600
-    os.utime(lock, (stale, stale))
 
-    assert _run(site) == 0
+    with caplog.at_level('WARNING', logger='nightly_sync'):
+        assert _run(site) == 0
     archived = (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
-    assert '999' not in archived          # still deferred, however old the lock
+    assert '999' in archived
+    assert any('lock_stale_hours' in r.getMessage() for r in caplog.records)
 
 
 def test_growth_that_keeps_everything_is_not_a_rebuild(site):
@@ -546,31 +546,30 @@ def test_rebuild_still_writes_its_reports(site):
     assert report['summary']['added'] == 30 and report['summary']['removed'] == 30
 
 
-def test_deferred_projects_reach_the_attention_panel(site):
+def test_a_deferred_list_left_by_an_older_build_is_cleared(site):
+    """Upgrading over a census written by <= 1.8.0 must not leave the
+    attention panel naming projects that have long since synced."""
     from dw_compare import dashboard
 
     assert _run(site) == 0
+    cpath = site['data'] / 'census.json'
+    census = json.loads(cpath.read_text(encoding='utf-8'))
+    census['deferred'] = [{'project': 'Alpha', 'name': 'Alpha',
+                           'path': 'Alpha.driveprojx',
+                           'holder': 'jsmith|WS-04', 'hours': 1.9}]
+    cpath.write_text(json.dumps(census), encoding='utf-8')
+
     _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=999'})
-    (site['source'] / 'Alpha.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
     assert _run(site) == 0
 
-    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
-    assert [d['project'] for d in census['deferred']] == ['Alpha']
-    assert census['deferred'][0]['holder'] == 'jsmith|WS-04'
-
-    html = dashboard._attention_html(census)
-    assert 'open in Administrator' in html and 'jsmith|WS-04' in html
-
-    # It clears itself once the project is closed — not a standing decision.
-    (site['source'] / 'Alpha.~driveproj').unlink()
-    assert _run(site) == 0
-    census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
-    assert census['deferred'] == []
+    census = json.loads(cpath.read_text(encoding='utf-8'))
+    assert 'deferred' not in census
+    assert 'jsmith|WS-04' not in dashboard._attention_html(census)
 
 
 def test_duplicate_name_still_conflicts_when_the_chosen_file_is_locked(site):
-    """Deferral happens after the name-collision check, so an open project
-    does not quietly swallow the conflict its twin should raise."""
+    """The name-collision check is independent of the lock: the registered
+    copy archives, the other is still flagged."""
     _write_projx(site['source'] / 'Dup.driveprojx', {'A': '=1'})
     _write_projx(site['source'] / 'nested' / 'Dup.driveprojx', {'B': '=2'})
     (site['source'] / 'Dup.~driveproj').write_text('jsmith|WS-04', encoding='utf-8')
@@ -579,16 +578,16 @@ def test_duplicate_name_still_conflicts_when_the_chosen_file_is_locked(site):
 
     census = json.loads((site['data'] / 'census.json').read_text(encoding='utf-8'))
     assert [c['path'] for c in census['conflicts']] == ['nested/Dup.driveprojx']
-    assert [d['project'] for d in census['deferred']] == ['Dup']
-    assert not (site['repo'] / 'Dup').exists()   # neither copy was archived
+    archived = (site['repo'] / 'Dup' / 'driveProj' / 'project.xml').read_text(encoding='utf-8')
+    assert 'A' in archived and 'B' not in archived   # only the registered copy
 
 
 @pytest.mark.parametrize('key, bad', [
     ('rebuild_similarity', '5%'),
     ('rebuild_similarity', 1.5),
     ('rebuild_min_elements', 'lots'),
-    ('lock_stale_hours', True),
-    ('lock_stale_hours', -1),
+    ('rebuild_min_elements', -1),
+    ('rebuild_similarity', True),
 ])
 def test_bad_tuning_values_fail_at_load_not_at_2am(site, key, bad):
     cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
@@ -604,14 +603,54 @@ def test_numeric_tuning_strings_are_coerced(site):
     but it has to become a number here, because `"6" * 3600` is 3600 copies
     of "6" and the TypeError would land an hour into the night."""
     cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
-    cfg.update({'lock_stale_hours': '6', 'rebuild_similarity': '0.05',
-                'rebuild_min_elements': '25'})
+    cfg.update({'rebuild_similarity': '0.05', 'rebuild_min_elements': '25'})
     site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
 
     loaded = nightly_sync.load_config(site['cfg_path'])
-    assert loaded['lock_stale_hours'] == 6
     assert loaded['rebuild_similarity'] == 0.05
     assert loaded['rebuild_min_elements'] == 25
+
+
+def test_every_run_names_the_build_that_produced_it(site, caplog):
+    """The archive and the metrics DB are kept for years; sync.log recorded
+    only what a run DID, never what ran it. Verifying an upgrade used to mean
+    fingerprinting an incidental change in the summary line."""
+    from dw_compare._version import __version__
+
+    with caplog.at_level('INFO', logger='nightly_sync'):
+        assert _run(site) == 0
+    first = caplog.records[0].getMessage()
+    assert __version__ in first and 'live' in first
+
+    with _db(site) as db:
+        assert db.execute('SELECT version FROM runs ORDER BY id DESC '
+                          'LIMIT 1').fetchone()[0] == __version__
+
+
+def test_a_dry_run_says_so_and_records_no_run_row(site, caplog):
+    with caplog.at_level('INFO', logger='nightly_sync'):
+        assert _run(site, dry_run=True) == 0
+    assert 'dry run' in caplog.records[0].getMessage()
+    assert not (site['data'] / 'metrics.sqlite').exists() or _run_rows(site) == 0
+
+
+def test_a_pre_1_9_metrics_db_gains_the_version_column_in_place(site):
+    """Same in-place migration the `source` column used in 1.3.0: an existing
+    site's history must survive the upgrade, honestly labelled unknown."""
+    db_path = site['data'] / 'metrics.sqlite'
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as db:      # the 1.8.0 runs table, verbatim
+        db.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT,'
+                   ' run_date TEXT NOT NULL, started_at TEXT NOT NULL,'
+                   ' finished_at TEXT, projects_seen INTEGER,'
+                   ' projects_changed INTEGER, errors TEXT)')
+        db.execute("INSERT INTO runs (run_date, started_at, projects_seen,"
+                   " projects_changed, errors) VALUES ('2026-01-01','x',1,0,'')")
+
+    assert _run(site) == 0
+    with _db(site) as db:
+        versions = [r[0] for r in db.execute('SELECT version FROM runs ORDER BY id')]
+    assert versions[0] == '' and versions[-1]   # old rows unknown, not guessed
 
 
 def test_dry_run_neither_takes_nor_honours_the_run_lock(site):

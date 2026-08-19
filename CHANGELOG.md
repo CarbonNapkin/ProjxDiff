@@ -4,6 +4,80 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-08-19
+
+### Changed
+
+- **Projects open in DriveWorks Administrator are archived, not skipped.**
+  1.8.0 deferred them to the next run on the theory that copying a project
+  mid-edit captured a half-written state. It does not: the `.driveprojx` on
+  the share is the last *saved* state, and DriveWorks rewrites it on save
+  rather than continuously — so deferring bought no atomicity (someone who
+  saves at 01:59 and keeps working is captured mid-thought whether or not a
+  lock exists) while costing real coverage. A lock left behind by a session
+  that exited uncleanly froze its project out of the archive; a single night
+  at a live site showed three such locks, aged 1.9h, 17.6h and 85.3h. The
+  sync now archives whatever is on the share at run time and logs an `[OPEN]`
+  line naming whoever holds the lock, so a surprising diff can still be
+  traced back. A partial save is still caught by the three defenses that
+  actually address it: the copy is retried, a truncated zip fails loudly on
+  its central directory, and the rebuild guard refuses to re-baseline a good
+  archive over a copy that parses to nothing. The `.~driveproj` lock file is
+  still never deleted — it is what stops a second person opening the project.
+- `lock_stale_hours` is retired. A config that still sets it loads normally
+  and logs one warning that the key no longer does anything. The dashboard
+  and Manage Nightly Sync no longer carry a "Not synced last run" section,
+  and a `deferred` list left in an existing `census.json` is cleared on the
+  first 1.9.0 run rather than naming projects that have long since synced.
+
+### Added
+
+- **Every run names the build that produced it.** `sync.log` opens with
+  `Projx Diff <version> starting (live|dry run)`, and the metrics database's
+  `runs` table gains a `version` column (migrated in place; rows written by
+  an earlier build stay empty rather than being guessed at). Confirming that
+  an upgrade actually took effect previously meant fingerprinting an
+  incidental change in the summary line, which only worked by accident and
+  stopped working the moment two versions shared a format.
+
+### Fixed
+
+- **`--doctor` and `--sync` produce output when run from a terminal on
+  Windows.** Both spec branches build `console=False`, so the exe is a
+  windowed binary: launched from `cmd.exe` it detached immediately, printed
+  nothing, and returned a prompt that looked exactly like a healthy run —
+  making the documented post-install check ("run `--doctor`, confirm it
+  reports the version") impossible to actually perform. The Windows install
+  now ships a second, console-subsystem copy as **`ProjxDiff-cli.exe`**
+  beside `ProjxDiff.exe`, the same split as `python.exe`/`pythonw.exe`. Use
+  it for anything you run by hand; unlike attaching to the parent console it
+  also behaves correctly when piped, redirected or waited on. Both exes come
+  from one PyInstaller build and share one `_internal\`, so the download does
+  not grow by a second runtime. `ProjxDiff.exe` is unchanged — the Start Menu
+  shortcut and the scheduled task still run it, and a double-click still opens
+  the app without flashing a console.
+- **Upgrading from pre-1.5.x no longer leaves a stale 32-bit install behind.**
+  1.3.0 predates `ArchitecturesInstallIn64BitMode`, so it registered in 32-bit
+  mode and its uninstall key lives under `WOW6432Node`; Inno treated it as a
+  separate product and every upgrade since installed *alongside* it in
+  `Program Files`, leaving 1.3.0 sitting in `Program Files (x86)` with its own
+  Add/Remove entry. The installer now finds that key and runs its uninstaller
+  before installing. On its own the orphan was wasted disk — the damage was in
+  combination with the next item, where a nightly task pointing into the x86
+  path kept running 1.3.0 after every "successful" upgrade.
+- **An upgrade no longer leaves the nightly task running the old binary.** The
+  installer never looked at Task Scheduler, so a site whose "ProjxDiff Nightly
+  Sync" task pointed somewhere the upgrade did not replace upgraded cleanly and
+  went on running the old build at 02:00 with no error and nothing to see. The
+  installer — which is already elevated, and so is the one moment in the
+  lifecycle where re-registering a SYSTEM task needs no separate UAC prompt —
+  now compares the task's command against the copy it just installed and
+  repoints it if they differ, leaving the schedule, the arguments (your config
+  path) and the principal exactly as they were. It is deliberately narrow: a
+  machine with no such task is left alone rather than having a nightly job
+  invented for it, and a task running something that is not a Projx Diff
+  executable is reported and left untouched.
+
 ## [1.8.0] - 2026-08-16
 
 ### Fixed
