@@ -27,16 +27,18 @@ exe is windowed, so there is no console output; everything goes to
    projects are auto-registered as *pending* and sync normally; same-name
    collisions sync only the registered path and flag the other file.
    A project open in DriveWorks Administrator (it has a `<name>.~driveproj`
-   lock beside it) is **deferred** to the next run rather than archived
-   mid-edit. The lock file is never deleted — it is what stops a second
+   lock beside it) is **archived anyway**, with an `[OPEN]` line in the log
+   naming whoever has it. The `.driveprojx` on the share is the last *saved*
+   state — DriveWorks rewrites it on save, not continuously — so there is no
+   half-written state to avoid, and waiting on a lock left behind by a
+   crashed session would freeze that project out of the archive
+   indefinitely. The lock file is never deleted: it is what stops a second
    person opening the project, and it usually belongs to another user on
-   another machine. A lock older than `lock_stale_hours` (default 6) is
-   treated as abandoned and the project syncs anyway, so a session that
-   exited uncleanly cannot defer a project forever. Set it to `0` to defer
-   for as long as any lock is present. Deferred projects are listed on the
-   dashboard and in Manage Nightly Sync, so "why didn't that one sync?" has
-   an answer without reading the log. The check runs again after the file is
-   copied, so a project opened mid-sync is deferred too.
+   another machine.
+
+   > Until 1.8.0 an open project was *deferred* to the next run, governed by
+   > a `lock_stale_hours` setting. That key is now inert; a config that still
+   > carries it loads with a warning and is otherwise unaffected.
 3. Copies each file to local staging (3 attempts, 10s apart) and extracts it.
 4. Compares extracted content (by file hash) against the archive repo:
    - **Unchanged** — nothing happens. No commit, no rows, no reports.

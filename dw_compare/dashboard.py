@@ -189,14 +189,12 @@ def _collect_globals(conn: sqlite3.Connection, has_source: bool) -> dict:
 
 
 def _attention_html(census: dict) -> str:
-    """Needs-attention card: pending projects, unmapped users, conflicts,
-    projects deferred because they were open in Administrator.
+    """Needs-attention card: pending projects, unmapped users, conflicts.
     Empty string when there is nothing to review — the quiet steady state."""
     pending = census_mod.pending_projects(census)
     unmapped = census_mod.unmapped_users(census)
     conflicts = census.get('conflicts', [])
-    deferred = census.get('deferred', [])
-    if not pending and not unmapped and not conflicts and not deferred:
+    if not pending and not unmapped and not conflicts:
         return ''
 
     items = []
@@ -209,15 +207,6 @@ def _attention_html(census: dict) -> str:
         items.append(f'<li><b>Name conflict:</b> {escape(c.get("project", ""))} — '
                      f'{escape(c.get("path", ""))} clashes with '
                      f'{escape(c.get("registered", ""))}</li>')
-    # An open project is normal and clears itself, so this reads as "did not
-    # sync last night, here is why" rather than as something to go and fix.
-    for d in deferred:
-        holder = d.get('holder', '')
-        who = f' — held by {escape(holder)}' if holder else ''
-        items.append(f'<li><b>Not synced (open in Administrator):</b> '
-                     f'{escape(d.get("project", ""))}{who} '
-                     f'<span class="muted">(locked {d.get("hours", 0)}h)</span></li>')
-
     return (f'<section class="card attn"><h2>&#9888; Needs attention '
             f'({len(items)})</h2><ul>{"".join(items)}</ul>'
             '<p class="muted">Resolve in Projx Diff &rsaquo; Tools &rsaquo; '
