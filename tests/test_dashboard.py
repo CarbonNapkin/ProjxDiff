@@ -61,6 +61,40 @@ def test_dashboard_empty_db_degrades_gracefully(tmp_path):
     assert 'No changes recorded yet' in html
 
 
+def test_recent_changes_embed_full_history_with_date_filter(tmp_path):
+    # The page bakes EVERY per-night row in, shows the latest RECENT_ROWS by
+    # default (.extra hides the rest), and the date inputs filter client-side
+    # — a static file has no server to ask for more.
+    conn = nightly_sync.open_db(tmp_path / 'metrics.sqlite')
+    rows = [(f'2026-07-{d:02d}', f'Proj{d}', '', 'variables', 1, 0, 0, 3)
+            for d in range(1, 26)]     # 25 nights, one project each
+    conn.executemany(
+        'INSERT INTO category_changes (run_date, project, owner, category,'
+        ' added, removed, modified, unchanged) VALUES (?,?,?,?,?,?,?,?)', rows)
+    conn.close()
+    html = dashboard.generate_dashboard(tmp_path / 'metrics.sqlite',
+                                        today=date(2026, 7, 26))
+
+    assert html.count('data-d="') == 25          # full history is in the page
+    assert html.count('class="extra"') == 25 - dashboard.RECENT_ROWS
+    # Oldest date is hidden by default but present for the filter to find.
+    assert '<tr class="extra" data-d="2026-07-01">' in html
+    # Newest rows are not marked extra.
+    assert '<tr data-d="2026-07-25">' in html
+    # Inputs are bounded by the data actually in the page.
+    assert 'id="rcFrom" min="2026-07-01" max="2026-07-25"' in html
+    assert 'id="rcTo" min="2026-07-01" max="2026-07-25"' in html
+    assert 'id="rcClear"' in html
+
+
+def test_empty_db_renders_no_date_filter(tmp_path):
+    conn = nightly_sync.open_db(tmp_path / 'metrics.sqlite')
+    conn.close()
+    html = dashboard.generate_dashboard(tmp_path / 'metrics.sqlite',
+                                        today=date(2026, 8, 3))
+    assert 'id="rcFrom"' not in html   # the JS guards on this id being absent
+
+
 def test_dashboard_shows_last_run_errors(tmp_path):
     conn = nightly_sync.open_db(tmp_path / 'metrics.sqlite')
     conn.execute(

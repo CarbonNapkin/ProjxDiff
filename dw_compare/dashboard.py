@@ -180,10 +180,15 @@ def _collect(conn: sqlite3.Connection, today: date, source: str = None) -> dict:
 def _collect_globals(conn: sqlite3.Connection, has_source: bool) -> dict:
     q = conn.execute
     src_col = 'source' if has_source else "''"
+    # The FULL per-night history, not just the visible window: the page shows
+    # the latest RECENT_ROWS by default and filters the rest client-side via
+    # the date inputs (the dashboard is a static file — there is no server to
+    # ask for more). At ~120 bytes a row this stays small for years of
+    # nightly data.
     recent = q(f'SELECT run_date, project, owner, SUM(added), SUM(removed), '
                f'SUM(modified), {src_col} FROM category_changes '
                f'GROUP BY run_date, {src_col}, project '
-               'ORDER BY run_date DESC, project LIMIT ?', (RECENT_ROWS,)).fetchall()
+               'ORDER BY run_date DESC, project').fetchall()
     last_run = q('SELECT run_date, finished_at, projects_seen, projects_changed, errors '
                  'FROM runs ORDER BY id DESC LIMIT 1').fetchone()
     return {'recent': recent, 'last_run': last_run}
@@ -281,6 +286,16 @@ a { color: var(--series); }
   border-radius: 8px; padding: 6px 16px; font: inherit; font-size: 13px;
   font-weight: 600; cursor: pointer; }
 .tab.active { background: var(--series); border-color: var(--series); color: #fff; }
+.datefilter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin: 0 0 12px; font-size: 13px; color: var(--ink-2); }
+.datefilter input { border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink); border-radius: 6px; padding: 4px 6px; font: inherit;
+  font-size: 13px; color-scheme: light dark; }
+.datefilter button { border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink-2); border-radius: 6px; padding: 4px 12px; font: inherit;
+  font-size: 13px; cursor: pointer; }
+#rcCount { color: var(--muted); margin-left: auto; }
+tr.extra { display: none; }
 #tip { position: absolute; display: none; pointer-events: none; z-index: 10;
   background: var(--ink); color: var(--page); font-size: 12px;
   padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
@@ -317,6 +332,35 @@ function setTheme(mode) {
     b.classList.toggle('on', (b.dataset.set || '') === (mode || '')));
 }
 setTheme((() => { try { return localStorage.getItem('projxdiff-theme') || ''; } catch (e) { return ''; } })());
+(() => {  // Recent-changes date filter (absent when the table is empty)
+  const from = document.getElementById('rcFrom');
+  if (!from) return;
+  const to = document.getElementById('rcTo');
+  const count = document.getElementById('rcCount');
+  const rows = document.querySelectorAll('#recentTable tbody tr');
+  function apply() {
+    const lo = from.value, hi = to.value, active = !!(lo || hi);
+    let shown = 0;
+    rows.forEach(tr => {
+      const d = tr.dataset.d;
+      // ISO dates compare correctly as strings; default view = latest rows
+      // (everything not marked .extra at generation time).
+      const show = active ? ((!lo || d >= lo) && (!hi || d <= hi))
+                          : !tr.classList.contains('extra');
+      tr.style.display = show ? '' : 'none';
+      if (show) shown++;
+    });
+    count.textContent = active
+      ? shown + ' of ' + rows.length + ' rows in range'
+      : 'latest ' + shown + ' of ' + rows.length + ' rows';
+  }
+  from.addEventListener('change', apply);
+  to.addEventListener('change', apply);
+  document.getElementById('rcClear').addEventListener('click', () => {
+    from.value = ''; to.value = ''; apply();
+  });
+  apply();
+})();
 """
 
 
@@ -402,21 +446,40 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
         scopes_html = _scope_sections(scoped['All'], days)
 
     rows_html = []
-    for run_date, project, owner, a, r, m, src in g['recent']:
+    for i, (run_date, project, owner, a, r, m, src) in enumerate(g['recent']):
         owner_disp = (owner or '').split('<')[0].strip() or '—'
         href = (f'reports/{quote(src)}/{quote(run_date)}/{quote(project)}.html'
                 if src else f'reports/{quote(run_date)}/{quote(project)}.html')
         src_cell = f'<td>{escape(src or "—")}</td>' if multi else ''
+        # Rows past the default window carry .extra and start hidden; the
+        # date filter reveals whatever range is asked for.
+        extra = ' class="extra"' if i >= RECENT_ROWS else ''
         rows_html.append(
-            f'<tr><td>{escape(run_date)}</td>{src_cell}<td>{escape(project)}</td>'
+            f'<tr{extra} data-d="{escape(run_date)}">'
+            f'<td>{escape(run_date)}</td>{src_cell}<td>{escape(project)}</td>'
             f'<td>{escape(owner_disp)}</td>'
             f'<td class="n">+{a}</td><td class="n">-{r}</td><td class="n">~{m}</td>'
             f'<td><a href="{href}">report</a></td></tr>')
     src_head = '<th>Source</th>' if multi else ''
-    recent_html = (f'<table><thead><tr><th>Date</th>{src_head}<th>Project</th><th>User</th>'
-                   '<th>Added</th><th>Removed</th><th>Modified</th><th></th></tr></thead>'
-                   f'<tbody>{"".join(rows_html)}</tbody></table>' if rows_html
-                   else '<p class="empty">No changes recorded yet.</p>')
+    if rows_html:
+        # Dates run newest-first, so the bounds sit at the two ends.
+        newest, oldest = g['recent'][0][0], g['recent'][-1][0]
+        filter_html = (
+            f'<div class="datefilter">'
+            f'<label>From <input type="date" id="rcFrom" min="{escape(oldest)}" '
+            f'max="{escape(newest)}"></label>'
+            f'<label>To <input type="date" id="rcTo" min="{escape(oldest)}" '
+            f'max="{escape(newest)}"></label>'
+            f'<button type="button" id="rcClear">Clear</button>'
+            f'<span id="rcCount"></span></div>')
+        recent_html = (
+            f'{filter_html}'
+            f'<table id="recentTable"><thead><tr><th>Date</th>{src_head}'
+            '<th>Project</th><th>User</th>'
+            '<th>Added</th><th>Removed</th><th>Modified</th><th></th></tr></thead>'
+            f'<tbody>{"".join(rows_html)}</tbody></table>')
+    else:
+        recent_html = '<p class="empty">No changes recorded yet.</p>'
 
     return f'''<!DOCTYPE html>
 <html lang="en">

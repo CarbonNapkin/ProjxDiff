@@ -4,6 +4,18 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Date-range filter on the dashboard's Recent changes table.** The page
+  now bakes in the full per-night history (about 120 bytes a row — years of
+  nightly data stay small) instead of only the latest 20 rows, shows the
+  usual latest-20 view by default, and adds From/To date inputs that filter
+  client-side — the dashboard is a static file, so the data must ship with
+  the page. A row counter says what's showing; Clear returns to the default
+  view. The date inputs are bounded to the dates actually recorded.
+
 ## [1.10.0] - 2026-09-04
 
 ### Fixed
