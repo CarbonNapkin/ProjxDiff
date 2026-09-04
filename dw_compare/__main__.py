@@ -273,9 +273,13 @@ Examples:
                             '--map/--track/--ignore to manage dispositions')
     parser.add_argument('--dashboard', type=Path, metavar='CONFIG',
                        help='Regenerate the work-metrics dashboard for the given config')
+    parser.add_argument('--backfill-rules', type=Path, metavar='CONFIG',
+                       help='Replay the archive repos to backfill rule-change '
+                            'metrics recorded before the rules category existed')
     parser.add_argument('--dry-run', action='store_true',
-                       help='(with --sync) report changes without changing the '
-                            'archive, metrics, census or dashboard')
+                       help='(with --sync or --backfill-rules) report changes '
+                            'without changing the archive, metrics, census or '
+                            'dashboard')
     parser.add_argument('--map', action='append', default=[], metavar='RAW=IDENTITY',
                        help='(with --census) map a display name to "Name <email>"')
     parser.add_argument('--track', action='append', default=[], metavar='PROJECT',
@@ -358,6 +362,11 @@ Examples:
     if args.dashboard:
         from .dashboard import main as dashboard_main
         sys.exit(dashboard_main([str(args.dashboard)]))
+
+    if args.backfill_rules:
+        from .backfill import main as backfill_main
+        sys.exit(backfill_main([str(args.backfill_rules)]
+                               + (['--dry-run'] if args.dry_run else [])))
     
     # Auto-detect projects if not provided
     if args.old_project is None or args.new_project is None:

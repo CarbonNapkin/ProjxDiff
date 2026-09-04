@@ -29,6 +29,11 @@ Document shape (versioned via the top-level "schema" key):
   "errors": []
 }
 
+The 'rules' category (driven-property rules — the HTML report's "Rule
+Changes" section) joined in 1.10.0; the schema stays 1 because the change
+is additive. Documents produced by earlier builds simply lack the key, which
+is "not measured", not "no rule changes".
+
 Only changed elements appear in "changes"; unchanged elements are counted in
 the summary only. "details" names the changed fields / rules / properties with
 raw (unescaped) old/new values; empty old/new strings are omitted. "errors"
@@ -310,11 +315,62 @@ def _diff_forms(old: dict, new: dict) -> tuple:
     return records, stats
 
 
+def _diff_rules(old_idx, new_idx) -> tuple:
+    """Driven-property rules — the HTML report's "Rule Changes" section.
+
+    Detection mirrors comparers.compare_property_rules exactly (matched by
+    rule_id; added/removed rows without a formula are unbound placeholders,
+    not real rules, and stay out of the counts). Records use the raw rule_id
+    as the element name — the JSON diff keeps raw ids by design; readable
+    names are a report-time, database-backed concern — with the placement
+    breadcrumb (raw TrIds when unresolved) and kind in the details."""
+    from . import components as C
+
+    old_by_rid = {C._norm(p.rule_id): p for p in old_idx.property_rules if p.rule_id}
+    new_by_rid = {C._norm(p.rule_id): p for p in new_idx.property_rules if p.rule_id}
+
+    added_rids = set(new_by_rid) - set(old_by_rid)
+    removed_rids = set(old_by_rid) - set(new_by_rid)
+    shared_rids = set(old_by_rid) & set(new_by_rid)
+    modified_rids = {rid for rid in shared_rids
+                     if old_by_rid[rid].formula != new_by_rid[rid].formula}
+
+    total_compared = len(shared_rids) + len(added_rids) + len(removed_rids)
+    stats = {'added': 0, 'removed': 0, 'modified': len(modified_rids),
+             'unchanged': total_compared - len(modified_rids)}
+
+    def details_for(pr, idx, status, old_formula, new_formula):
+        return [_field('formula', status, old_formula, new_formula),
+                _field('kind', status, '', pr.kind),
+                _field('placement', status, '', idx.breadcrumb(pr.owner_path))]
+
+    records = []
+    for rid in sorted(added_rids):
+        pr = new_by_rid[rid]
+        if pr.formula:
+            stats['added'] += 1
+            records.append(_record(pr.rule_id, 'added',
+                                   details_for(pr, new_idx, 'added', '', pr.formula)))
+    for rid in sorted(removed_rids):
+        pr = old_by_rid[rid]
+        if pr.formula:
+            stats['removed'] += 1
+            records.append(_record(pr.rule_id, 'removed',
+                                   details_for(pr, old_idx, 'removed', pr.formula, '')))
+    for rid in sorted(modified_rids):
+        op, npr = old_by_rid[rid], new_by_rid[rid]
+        records.append(_record(npr.rule_id, 'modified',
+                               details_for(npr, new_idx, 'modified',
+                                           op.formula, npr.formula)))
+    return records, stats
+
+
 # Category key on DWProject -> differ. Order matches the HTML report's sections.
 _CATEGORY_FUNCS = [
     ('variables', _diff_variables),
     ('constants', _diff_constants),
     ('calc_tables', _diff_calc_tables),
+    ('rules', _diff_rules),
     ('component_tasks', _diff_component_tasks),
     ('documents', _diff_documents),
     ('lookup_tables', _diff_lookup_tables),
@@ -326,6 +382,10 @@ _CATEGORY_FUNCS = [
 
 _EMPTY_STATS = {'added': 0, 'removed': 0, 'modified': 0, 'unchanged': 0}
 
+# Most category keys ARE the DWProject attribute; 'rules' diffs the projects'
+# ComponentIndex objects (driven-property rules live there, not in a dict).
+_CATEGORY_ATTRS = {'rules': 'component_index'}
+
 
 def build_diff(old_proj: DWProject, new_proj: DWProject,
                old_name: str = 'old', new_name: str = 'new') -> dict:
@@ -335,8 +395,9 @@ def build_diff(old_proj: DWProject, new_proj: DWProject,
     errors = []
 
     for cat_key, fn in _CATEGORY_FUNCS:
+        attr = _CATEGORY_ATTRS.get(cat_key, cat_key)
         try:
-            records, stats = fn(getattr(old_proj, cat_key), getattr(new_proj, cat_key))
+            records, stats = fn(getattr(old_proj, attr), getattr(new_proj, attr))
         except Exception:
             traceback.print_exc()
             errors.append(cat_key)

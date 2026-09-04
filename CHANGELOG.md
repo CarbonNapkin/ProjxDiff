@@ -4,6 +4,39 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-09-04
+
+### Fixed
+
+- **Rule changes now count in the metrics and on the dashboard.** The JSON
+  diff (which feeds the nightly metrics database) had no category for
+  driven-property rules — the HTML report's "Rule Changes" section, often
+  the bulk of a night's work. The dashboard's tiles, "By category" chart,
+  per-user counts and recent-changes rows all silently excluded them, so a
+  diff the report showed as `+42 −2 ~8` could land on the dashboard as
+  `+0 −0 ~3`. `build_diff` gains a `rules` category (detection identical to
+  the report's `compare_property_rules`, locked by the same parity tests
+  that guard every other category); the JSON schema stays 1 — the change is
+  additive, and a document without the key means "not measured", not "no
+  rule changes".
+
+### Added
+
+- **`--backfill-rules config.json [--dry-run]`** repairs the history: the
+  archived JSON reports predate the category, but the archive git repos
+  hold every night's full project state, so the backfill replays each
+  recorded-diff commit (`<name>: +A -R ~M (nightly sync <date>)`), re-diffs
+  just the rules category, and inserts the rows that night's run would have
+  written. Baselines, rebuilds and removals are skipped exactly as the live
+  sync skips them; owner attribution reuses the owner already recorded on
+  that night's other rows (falling back to the archived tree's last-saver
+  through the census, read-only). Idempotent — re-running, or running after
+  the fixed sync has recorded some nights live, never double-counts. The
+  dashboard is regenerated at the end when anything changed. A live
+  backfill takes and honours the sync's one-writer lock (`sync.lock`), so
+  it cannot interleave metrics writes with the 02:00 run; a dry run, as
+  with the sync, neither takes nor honours it.
+
 ## [1.9.0] - 2026-08-19
 
 ### Changed

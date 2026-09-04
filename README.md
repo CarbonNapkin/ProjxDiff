@@ -131,7 +131,13 @@ mapping (with retroactive metrics healing), and name conflicts.
 python -m dw_compare --sync config.json [--dry-run]
 python -m dw_compare --census config.json [--map "Raw=Name <email>"] [--track NAME] [--ignore NAME]
 python -m dw_compare --dashboard config.json
+python -m dw_compare --backfill-rules config.json [--dry-run]
 ```
+
+`--backfill-rules` is a one-time repair for metrics recorded before rule
+changes counted (see the changelog): it replays the archive repos'
+history and inserts the rule-change rows each night's run would have
+written. It is idempotent — safe to re-run.
 
 See [scripts/nightly_sync/README.md](scripts/nightly_sync/README.md) for
 setup (Windows Task Scheduler) and the config format.

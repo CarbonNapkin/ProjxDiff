@@ -35,6 +35,8 @@ Projx Diff at your project shares and it archives every project nightly
 into version control, detects what changed, and builds a team dashboard —
 activity trends, most-active projects, and per-user contribution,
 attributed automatically to whoever last saved each project in DriveWorks.
+Every kind of change counts, down to the individual model rules driving
+your captured components.
 Multiple locations (production, staging, satellite offices) roll into one
 dashboard with per-location views, while their histories stay safely
 separated. New projects and unfamiliar user names are flagged for one-click

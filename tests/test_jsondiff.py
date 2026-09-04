@@ -20,6 +20,7 @@ from dw_compare.jsondiff import (
     _diff_lookup_tables,
     _diff_data_tables,
     _diff_nav_steps,
+    _diff_rules,
     _diff_spec_macros,
     _diff_forms,
 )
@@ -32,6 +33,7 @@ from dw_compare.comparers import (
     compare_lookup_tables,
     compare_data_tables,
     compare_nav_steps,
+    compare_property_rules,
     compare_spec_macros,
     compare_forms,
 )
@@ -39,6 +41,7 @@ from dw_compare.models import (
     DWProject, Variable, Constant, CalcTable, ComponentTask, SpecMacro,
     SpecMacroTask, NavStep, DataTableDef, Form, FormControl,
 )
+from dw_compare.components import ComponentIndex, PropertyRule
 
 
 def _doc(t, rules):
@@ -51,6 +54,16 @@ def _task(name, rules):
 
 def _mtask(path, title="Create Folder"):
     return SpecMacroTask(title=title, task_type="CreateFolder", properties={"Path": path})
+
+
+def _rule(rid, formula, kind="dimension", trid="trid-a"):
+    return PropertyRule(cp_ref=f"cp-{rid}", ce_ref="ce-1", rule_id=rid,
+                        owner_trid=trid, owner_path=(trid,), formula=formula,
+                        kind=kind)
+
+
+def _idx(*rules):
+    return ComponentIndex(property_rules=list(rules))
 
 
 # (label, json_differ, html_comparer, old, new) — one entry per fixture shape.
@@ -120,6 +133,14 @@ EQUIVALENCE_CASES = [
      {"F": Form("F", controls={"C": FormControl("C", "TextBox", {})})},
      {"F": Form("F", controls={"C": FormControl("C", "TextBox", {}),
                                "D": FormControl("D", "Label", {"Text": (True, "hi")})})}),
+    ("rules add/remove/modify", _diff_rules, compare_property_rules,
+     _idx(_rule("aaa1", "=Width"), _rule("aaa2", "=Height")),
+     _idx(_rule("aaa1", "=Width*2"), _rule("aaa3", "=Depth"))),
+    ("rules unchanged", _diff_rules, compare_property_rules,
+     _idx(_rule("aaa1", "=Width")), _idx(_rule("aaa1", "=Width"))),
+    ("rules blank-formula placeholder is not a change", _diff_rules, compare_property_rules,
+     _idx(_rule("aaa1", "=Width")),
+     _idx(_rule("aaa1", "=Width"), _rule("aaa2", ""))),
 ]
 
 
@@ -181,6 +202,20 @@ def test_form_details_name_control_and_property():
                                       "old": "=True", "new": "=False"}]
 
 
+def test_rule_change_details_carry_formulas_and_placement():
+    records, stats = _diff_rules(_idx(_rule("aaa1", "=Old")),
+                                 _idx(_rule("aaa1", "=New")))
+    assert stats == {"added": 0, "removed": 0, "modified": 1, "unchanged": 0}
+    rec = records[0]
+    assert rec["name"] == "aaa1"
+    assert rec["status"] == "modified"
+    by_field = {d["field"]: d for d in rec["details"]}
+    assert by_field["formula"]["old"] == "=Old"
+    assert by_field["formula"]["new"] == "=New"
+    assert by_field["kind"]["new"] == "dimension"
+    assert by_field["placement"]["new"]      # breadcrumb present, raw trid ok
+
+
 # ---------- build_diff document ----------
 
 def _sample_projects():
@@ -215,6 +250,23 @@ def test_build_diff_document_shape_and_summary():
     for rec in doc["changes"]:
         assert rec["category"] in cats
         assert rec["status"] in ("added", "removed", "modified")
+
+
+def test_build_diff_counts_rule_changes():
+    # The regression this guards: rule changes were invisible to the metrics
+    # (and so the dashboard) because build_diff had no rules category, while
+    # the HTML report counted them — the two disagreed on every diff whose
+    # bulk was driven-property rules.
+    old, new = _sample_projects()
+    old.component_index = _idx(_rule("aaa1", "=Old"))
+    new.component_index = _idx(_rule("aaa1", "=New"), _rule("aaa2", "=Added"))
+    doc = build_diff(old, new)
+    # unchanged mirrors compare_property_rules, whose unchanged is
+    # total_compared - modified (added/removed rids included) — parity with
+    # the HTML report is the contract, quirks and all.
+    assert doc["summary"]["categories"]["rules"] == {
+        "added": 1, "removed": 0, "modified": 1, "unchanged": 1}
+    assert any(rec["category"] == "rules" for rec in doc["changes"])
 
 
 def test_build_diff_is_json_serializable():

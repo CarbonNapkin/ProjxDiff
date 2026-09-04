@@ -13,7 +13,13 @@ scheduled tasks keep working. New setups invoke the app directly:
 py -3 -m dw_compare --sync C:\ProjxArchive\config.json [--dry-run]
 py -3 -m dw_compare --census C:\ProjxArchive\config.json
 py -3 -m dw_compare --dashboard C:\ProjxArchive\config.json
+py -3 -m dw_compare --backfill-rules C:\ProjxArchive\config.json [--dry-run]
 ```
+
+`--backfill-rules` is a one-time repair after upgrading past the version
+that first counted rule changes in the metrics: it replays the archive
+repos' git history and inserts the rule-change rows earlier runs missed.
+Idempotent, safe to re-run; `--dry-run` shows what it would insert.
 
 A packaged build works too. The installed folder holds two copies of the
 app, the `python.exe`/`pythonw.exe` split:

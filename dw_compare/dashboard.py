@@ -35,6 +35,7 @@ CATEGORY_LABELS = {
     'documents': 'Documents', 'lookup_tables': 'Lookup Tables',
     'data_tables': 'Data Tables', 'spec_macros': 'Specification Macros',
     'nav_steps': 'Navigation Steps', 'forms': 'Forms', 'project': 'Project',
+    'rules': 'Rule Changes',
 }
 
 
