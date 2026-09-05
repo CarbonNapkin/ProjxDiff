@@ -47,6 +47,40 @@ class _CompareCancelled(Exception):
     effect between stages, which the status line says honestly."""
 
 
+class _ActivityBar(tk.Canvas):
+    """Indeterminate activity bar in plain tk. Deliberately NOT a
+    ttk.Progressbar: this app avoids ttk everywhere except the win32 widget
+    factory (older mac Tk misrenders it, and constructing ttk across many Tk
+    roots in one process — as the test suite does — destabilizes the theme
+    engine into intermittent hangs)."""
+
+    def __init__(self, parent, **kw):
+        kw.setdefault('height', 6)
+        kw.setdefault('highlightthickness', 0)
+        kw.setdefault('bg', '#e6e8ec')
+        super().__init__(parent, **kw)
+        self._block = self.create_rectangle(0, 0, 0, 0, fill=_SM_ACCENT, width=0)
+        self._after = None
+        self._x = 0.0
+
+    def start(self, _interval_ms: int = 16) -> None:
+        if self._after is None:
+            self._tick()
+
+    def stop(self) -> None:
+        if self._after is not None:
+            self.after_cancel(self._after)
+            self._after = None
+        self.coords(self._block, 0, 0, 0, 0)
+
+    def _tick(self) -> None:
+        w = max(1, self.winfo_width())
+        span = max(40, w // 4)
+        self._x = (self._x + max(2, w / 60)) % (w + span)
+        self.coords(self._block, self._x - span, 0, self._x, 8)
+        self._after = self.after(33, self._tick)
+
+
 PROJX_FILETYPES = [('DriveWorks™ project', '*.driveprojx')]
 APP_TITLE = f'Projx Diff {__version__}'
 
@@ -776,7 +810,7 @@ class CompareApp:
                                     pady=4, padx=12)
         self.cancel_btn.grid(row=0, column=2, sticky='e', padx=(8, 0))
         self.cancel_btn.grid_remove()
-        self.progress = ttk.Progressbar(act, mode='indeterminate', length=180)
+        self.progress = _ActivityBar(act)
         self.progress.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(6, 0))
         self.progress.grid_remove()
 
@@ -1645,6 +1679,14 @@ class _SyncManager:
         self.top.geometry('960x640')
         self.top.minsize(780, 460)
 
+        # Read by the metadata-scan worker thread (plain flag, no Tk calls
+        # off the UI thread) so a closed window ends the scan promptly.
+        self._closed = threading.Event()
+        self._meta_gen: object = None
+        self.top.bind('<Destroy>',
+                      lambda e: e.widget is self.top and self._closed.set(),
+                      add='+')
+
         self._build_all()
         self.top.transient(parent)
 
@@ -1726,6 +1768,16 @@ class _SyncManager:
             self._disp_buttons[value] = btn
         self._style_disp_buttons()
 
+        # Bulk triage: 50 new projects used to mean 100 clicks (a two-click
+        # pill per row). These act on whatever the filters leave visible;
+        # nothing is written until Apply/Save, so a slip is reversible.
+        tk.Label(seg, text='Set all shown to', bg=_SM_BG, fg=_SM_MUTED).pack(
+            side='left', padx=(24, 6))
+        for label in self._MENU_LABELS:
+            tk.Button(seg, text=label, command=lambda l=label: self._bulk_set(l),
+                      bg='#e6e8ec', relief='flat', padx=10, pady=2,
+                      cursor='hand2').pack(side='left', padx=(0, 4))
+
     def _build_footer(self) -> None:
         bar = tk.Frame(self.top, bg=_SM_BG)
         bar.pack(side='bottom', fill='x', padx=16, pady=(4, 12))
@@ -1736,6 +1788,13 @@ class _SyncManager:
                   padx=20, pady=6, cursor='hand2').pack(side='right')
         tk.Button(bar, text='Cancel', command=self.top.destroy, bg='#e6e8ec',
                   relief='flat', padx=16, pady=6, cursor='hand2').pack(side='right', padx=8)
+        # Apply = save and keep triaging. Save used to be all-or-nothing:
+        # write, modal, window gone — mid-triage progress was uncommittable.
+        tk.Button(bar, text='Apply', command=lambda: self._save(close=False),
+                  bg='#e6e8ec', relief='flat', padx=16, pady=6,
+                  cursor='hand2').pack(side='right')
+        self.footer_status = tk.Label(bar, text='', bg=_SM_BG, fg=_SM_MUTED)
+        self.footer_status.pack(side='right', padx=(0, 12))
         # Group management lives left of Save/Cancel; hidden for callers with
         # census data but no config file.
         if self.config_path is not None:
@@ -1816,7 +1875,10 @@ class _SyncManager:
             # Census keys are namespaced "<group>/<project>" in site configs.
             group, title = (name.split('/', 1) if self._named and '/' in name
                             else ('', name))
-            modified, saver = self._file_meta(self._source_root(name) / rel)
+            # Metadata means opening a zip per project — seconds each over a
+            # slow share, and it used to happen here, on the UI thread, while
+            # the window built. Placeholders now; _start_meta_scan fills in.
+            modified, saver = '…', '…'
             var = StringVar(value=self._DISP_TO_LABEL.get(entry.get('disposition', 'pending'), 'New'))
             self.proj_vars[name] = var
             cells = ([tk.Label(table, text=group, bg=_SM_CARD, fg=_SM_MUTED, anchor='w',
@@ -1854,6 +1916,53 @@ class _SyncManager:
 
         self._sort_col, self._sort_desc = 0, False
         self._render()
+        self._start_meta_scan()
+
+    def _start_meta_scan(self) -> None:
+        """Fill the Modified / Last-saved-by placeholders from a worker
+        thread. The worker NEVER touches Tk — it only reads files and feeds a
+        queue; a poll loop on the UI thread drains it (same pattern as the
+        main window's log pane). A rebuild (add group) replaces self._rows and
+        bumps the generation token, orphaning an in-flight scan harmlessly."""
+        rows = self._rows
+        if not rows:
+            return
+        meta_q: queue.Queue = queue.Queue()
+        gen = object()
+        self._meta_gen = gen
+
+        def worker():
+            for r in rows:
+                if self._meta_gen is not gen or self._closed.is_set():
+                    return
+                meta_q.put((r, self._file_meta(self._source_root(r['name']) / r['rel'])))
+            meta_q.put(None)   # sentinel: scan complete
+
+        def poll():
+            if self._closed.is_set() or self._meta_gen is not gen:
+                return
+            finished = False
+            try:
+                while True:
+                    item = meta_q.get_nowait()
+                    if item is None:
+                        finished = True
+                        break
+                    r, meta = item
+                    r['modified'], r['saver'] = meta
+                    r['search'] = f"{r['name']} {r['rel']} {meta[1]}".lower()
+                    off = 1 if self._named else 0
+                    r['cells'][off + 2].configure(text=meta[0])
+                    r['cells'][off + 3].configure(text=meta[1])
+            except queue.Empty:
+                pass
+            if finished:
+                self._render()   # re-sort and re-count with real values
+            else:
+                self.top.after(80, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        poll()
 
     def _disposition_menu(self, parent, var: StringVar) -> tk.OptionMenu:
         # Flat, borderless "pill" — no rectangle — with a color-coded label.
@@ -1969,11 +2078,7 @@ class _SyncManager:
     def _render(self) -> None:
         """Lay out the rows that pass the text + disposition filters, in the
         current sort order. Rows are persistent widgets re-gridded in place."""
-        query = self.filter_var.get().strip().lower()
-        df = self._disp_filter
-        rows = [r for r in self._rows
-                if (not query or query in r['search'])
-                and (df == 'all' or r['var'].get() == df)]
+        rows = self._visible_rows()
         rows.sort(key=lambda r: self._sort_key(r, self._sort_col), reverse=self._sort_desc)
 
         for r in self._rows:
@@ -2001,7 +2106,29 @@ class _SyncManager:
         self.count_label.configure(
             text=f'{total} projects' if shown == total else f'{shown} of {total} projects')
 
-    def _save(self) -> None:
+    def _visible_rows(self) -> list:
+        """Rows the current text + disposition filters leave visible."""
+        query = self.filter_var.get().strip().lower()
+        df = self._disp_filter
+        return [r for r in self._rows
+                if (not query or query in r['search'])
+                and (df == 'all' or r['var'].get() == df)]
+
+    def _bulk_set(self, label: str) -> None:
+        rows = self._visible_rows()
+        for r in rows:
+            r['var'].set(label)
+        self._render()
+        self._flash_footer(f'{len(rows)} project(s) set to {label} — '
+                           'Apply or Save to keep')
+
+    def _flash_footer(self, text: str) -> None:
+        self.footer_status.configure(text=text)
+        self.top.after(6000, lambda: self.footer_status.winfo_exists()
+                       and self.footer_status.cget('text') == text
+                       and self.footer_status.configure(text=''))
+
+    def _save(self, close: bool = True) -> None:
         cm = self._census_mod
         for name, var in self.proj_vars.items():
             self.census['projects'][name]['disposition'] = self._LABEL_TO_DISP.get(var.get(), 'pending')
@@ -2025,6 +2152,15 @@ class _SyncManager:
                     conn.close()
         except Exception as e:
             messagebox.showerror('Manage Nightly Sync', f'Save failed:\n{e}')
+            return
+
+        if not close:
+            # Apply: say so inline and keep the window (and its filters,
+            # scroll position, and half-typed identities) alive.
+            note = 'Saved'
+            if healed:
+                note += f' — {healed} past metrics row(s) healed'
+            self._flash_footer(note)
             return
 
         summary = f'Census saved to {self.cpath}.'

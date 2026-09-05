@@ -984,3 +984,83 @@ def test_run_diagnostics_lands_in_the_log_pane(tmp_path):
         assert 'Projx Diff' in app.log_box.get('1.0', 'end')
     finally:
         root.destroy()
+
+
+# ---------- sync manager: bulk triage, Apply, background metadata ----------
+
+def _manager_with_project(tmp_path, root):
+    from dw_compare import census as census_mod
+    cfg_path = sync_mod.init_site(tmp_path / 'site')
+    src = tmp_path / 'Plant'
+    _write_projx(src / 'Roof Curb.driveprojx', saver='Jane')
+    _write_projx(src / 'Kitchen Hood.driveprojx', saver='Jane')
+    cfg = gui_mod._load_manager_config(cfg_path)
+    cpath = census_mod.census_path(cfg)
+    census = census_mod.load_census(cpath)
+    mgr = gui_mod._SyncManager(root, cfg, cpath, census, config_path=cfg_path)
+    mgr._apply_add_group('Plant', str(src))
+    return mgr, cpath, census_mod
+
+
+def test_bulk_triage_sets_every_visible_row(tmp_path):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        mgr, _cpath, _cm = _manager_with_project(tmp_path, root)
+        assert all(v.get() == 'New' for v in mgr.proj_vars.values())
+        mgr._bulk_set('Track')
+        assert all(v.get() == 'Track' for v in mgr.proj_vars.values())
+        # Bulk respects the filters: only visible rows change.
+        mgr.filter_var.set('roof')
+        mgr._bulk_set('Ignore')
+        assert mgr.proj_vars['Plant/Roof Curb'].get() == 'Ignore'
+        assert mgr.proj_vars['Plant/Kitchen Hood'].get() == 'Track'
+    finally:
+        root.destroy()
+
+
+def test_apply_saves_census_and_keeps_the_window(tmp_path):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        mgr, cpath, cm = _manager_with_project(tmp_path, root)
+        mgr._bulk_set('Track')
+        mgr._save(close=False)
+        assert mgr.top.winfo_exists()          # Apply keeps triaging alive
+        saved = cm.load_census(cpath)
+        assert saved['projects']['Plant/Roof Curb']['disposition'] == 'track'
+        assert 'Saved' in mgr.footer_status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_metadata_fills_in_from_the_background_scan(tmp_path):
+    import time
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        mgr, _cpath, _cm = _manager_with_project(tmp_path, root)
+        # The table must not block on zip reads: rows may start as
+        # placeholders and resolve via the queue poll on the UI thread.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            root.update()
+            if all(r['saver'] != '…' for r in mgr._rows):
+                break
+            time.sleep(0.02)
+        assert [r['saver'] for r in mgr._rows] == ['Jane', 'Jane']
+        assert all(r['modified'] != '…' for r in mgr._rows)
+    finally:
+        root.destroy()

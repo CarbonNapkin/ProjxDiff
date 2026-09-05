@@ -49,6 +49,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   self-check's output in the log pane instead of asking anyone to find a
   terminal and a hidden flag.
 
+- **Manage Nightly Sync triages in bulk and saves without closing.**
+  "Set all shown to New / Track / Ignore" acts on whatever the filters
+  leave visible (50 new projects used to mean 100 clicks); nothing is
+  written until Apply or Save. **Apply** saves the census — and heals
+  metrics — while keeping the window, its filters, and half-typed
+  identities alive; Save keeps its close-when-done behavior. The
+  Modified / Last-saved-by columns now fill in from a background scan
+  instead of freezing the window while every project zip on the share is
+  opened.
+
 ### Fixed
 
 - **A failed compare now shows its details instead of directions.** The GUI
