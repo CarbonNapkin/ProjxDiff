@@ -8,6 +8,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The dashboard's charts answer clicks now.** A project or user bar
+  filters the Recent-changes table to that project or user (shown as a
+  removable chip); a column in the daily chart date-filters the table to
+  that day. Every day — including quiet ones — has a hover target, and the
+  daily tooltip now breaks the total down by category, so a spike is
+  explainable in place. The table also gains a free-text project/user
+  filter, and switching source tabs finally filters the table too (it used
+  to silently keep showing every source). The dashboard's script block now
+  goes through the same `node --check` gate as the report's.
+
 - **Copy buttons on formula cells in the report.** Hover any formula row for
   a copy button; modified rows get separate "copy old" / "copy new" — the
   inline diff interleaves both versions, so select-copying a modified

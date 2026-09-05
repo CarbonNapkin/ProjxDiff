@@ -65,8 +65,24 @@ def _nice_max(v: int) -> int:
     return 10 * mag
 
 
-def _daily_chart(days: list, counts: dict) -> str:
-    """Column chart of total changes per day. Single series, hover tooltips."""
+def _day_tip(d: str, n: int, breakdown: dict) -> str:
+    """Tooltip text for one day: total plus the top categories behind it."""
+    if not n:
+        return f'{d}: no changes'
+    tip = f'{d}: {n} change{"" if n == 1 else "s"}'
+    cats = breakdown.get(d, [])
+    if cats:
+        shown = ' · '.join(f'{label} {c}' for label, c in cats[:3])
+        more = len(cats) - 3
+        tip += f' — {shown}' + (f' · +{more} more' if more > 0 else '')
+    return tip
+
+
+def _daily_chart(days: list, counts: dict, breakdown: dict = None) -> str:
+    """Column chart of total changes per day. Hover any day (including quiet
+    ones) for a category breakdown; click a day to date-filter the
+    recent-changes table to it."""
+    breakdown = breakdown or {}
     W, H, PAD_L, PAD_B, PAD_T = 720, 180, 34, 20, 8
     plot_w, plot_h = W - PAD_L - 6, H - PAD_T - PAD_B
     top = _nice_max(max(counts.values(), default=0))
@@ -81,25 +97,34 @@ def _daily_chart(days: list, counts: dict) -> str:
         parts.append(f'<text class="tick" x="{PAD_L - 6}" y="{y + 4:.1f}" text-anchor="end">{val}</text>')
 
     label_every = max(1, len(days) // 8)
+    overlays = []
     for i, d in enumerate(days):
         x = PAD_L + i * step
         n = counts.get(d, 0)
         if n:
             h = plot_h * n / top
-            parts.append(f'<path class="mark" d="{_col_path(x + 1, PAD_T + plot_h - h, bar_w, h)}" '
-                         f'data-tip="{escape(d)}: {n} change{"" if n == 1 else "s"}"/>')
+            parts.append(f'<path class="mark" d="{_col_path(x + 1, PAD_T + plot_h - h, bar_w, h)}"/>')
         if i % label_every == 0:
             parts.append(f'<text class="tick" x="{x + step / 2:.1f}" y="{H - 4}" '
                          f'text-anchor="middle">{escape(d[5:])}</text>')
+        # Full-height invisible hover/click target per day — so quiet days are
+        # hoverable too, and a spike is one click from the rows behind it.
+        overlays.append(
+            f'<rect class="daycol" x="{x:.1f}" y="{PAD_T}" width="{step:.1f}" '
+            f'height="{plot_h:.1f}" data-day="{escape(d)}" '
+            f'data-tip="{escape(_day_tip(d, n, breakdown))}"/>')
 
     parts.append(f'<line class="axis" x1="{PAD_L}" y1="{PAD_T + plot_h}" x2="{W - 6}" y2="{PAD_T + plot_h}"/>')
+    parts.extend(overlays)   # overlays last, so they catch the pointer
     return (f'<svg viewBox="0 0 {W} {H}" role="img" '
             f'aria-label="Total element changes per day, last {len(days)} days">'
             + ''.join(parts) + '</svg>')
 
 
-def _rank_chart(rows: list, aria: str) -> str:
-    """Horizontal single-hue bars: [(label, count)], largest first."""
+def _rank_chart(rows: list, aria: str, facet: str = '') -> str:
+    """Horizontal single-hue bars: [(label, count)], largest first. When
+    `facet` names a recent-table column ('project' / 'user'), each row gets a
+    full-width click target that filters the recent-changes table to it."""
     if not rows:
         return '<p class="empty">No activity in this window.</p>'
     ROW_H, BAR_H, W, LABEL_W = 26, 12, 320, 118
@@ -114,9 +139,15 @@ def _rank_chart(rows: list, aria: str) -> str:
         disp = label if len(label) <= 18 else label[:17] + '…'
         parts.append(f'<text class="rlabel" x="{LABEL_W - 6}" y="{y + BAR_H - 1}" '
                      f'text-anchor="end">{escape(disp)}</text>')
-        parts.append(f'<path class="mark" d="{_hbar_path(LABEL_W, y, w, BAR_H)}" '
-                     f'data-tip="{escape(label)}: {n} change{"" if n == 1 else "s"}"/>')
+        parts.append(f'<path class="mark" d="{_hbar_path(LABEL_W, y, w, BAR_H)}"/>')
         parts.append(f'<text class="rvalue" x="{LABEL_W + w + 6:.1f}" y="{y + BAR_H - 1}">{n}</text>')
+        tip = f'{label}: {n} change{"" if n == 1 else "s"}'
+        facet_attrs = ''
+        if facet:
+            tip += ' — click to filter the table below'
+            facet_attrs = f' data-facet="{escape(facet)}" data-value="{escape(label, quote=True)}"'
+        parts.append(f'<rect class="rankrow{" clickable" if facet else ""}" x="0" y="{y - 2}" '
+                     f'width="{W}" height="{ROW_H}" data-tip="{escape(tip, quote=True)}"{facet_attrs}/>')
     return (f'<svg viewBox="0 0 {W} {H}" style="max-width:{W}px" role="img" '
             f'aria-label="{escape(aria)}">' + ''.join(parts) + '</svg>')
 
@@ -150,6 +181,16 @@ def _collect(conn: sqlite3.Connection, today: date, source: str = None) -> dict:
                    f'WHERE run_date >= ?{src} GROUP BY run_date',
                    params(time_cut)).fetchall())
 
+    # Per-day category breakdown feeds the daily chart's hover tooltip, so a
+    # spike is explainable in place instead of demanding a report safari.
+    daily_by_cat = {}
+    for rd, cat, n in q(
+            'SELECT run_date, category, SUM(added+removed+modified) AS n '
+            f'FROM category_changes WHERE run_date >= ?{src} '
+            'GROUP BY run_date, category ORDER BY n DESC',
+            params(time_cut)):
+        daily_by_cat.setdefault(rd, []).append((CATEGORY_LABELS.get(cat, cat), n))
+
     def ranked(col, cut, limit=10):
         rows = q(f'SELECT {col}, SUM(added+removed+modified) AS n FROM category_changes '
                  f'WHERE run_date >= ?{src} GROUP BY {col} ORDER BY n DESC LIMIT {int(limit)}',
@@ -161,6 +202,7 @@ def _collect(conn: sqlite3.Connection, today: date, source: str = None) -> dict:
 
     return {
         'daily': daily,
+        'daily_by_cat': daily_by_cat,
         'projects': ranked('project', rank_cut),
         'owners': owners,
         'categories': categories,
@@ -295,7 +337,18 @@ a { color: var(--series); }
   color: var(--ink-2); border-radius: 6px; padding: 4px 12px; font: inherit;
   font-size: 13px; cursor: pointer; }
 #rcCount { color: var(--muted); margin-left: auto; }
+#rcCount.nomatch { color: var(--critical); font-weight: 600; }
+.datefilter .chip { display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
+  border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12px; }
+.datefilter .chip button { border: 0; background: none; color: var(--muted);
+  font: inherit; font-size: 13px; cursor: pointer; padding: 0 5px; }
+.datefilter .chip button:hover { color: var(--critical); }
 tr.extra { display: none; }
+/* Invisible chart hit-targets: whole-day columns and whole rank rows. */
+svg .daycol, svg .rankrow { fill: transparent; }
+svg .daycol, svg .rankrow.clickable { cursor: pointer; }
+svg .daycol:hover, svg .rankrow.clickable:hover { fill: var(--series); fill-opacity: 0.10; }
 #tip { position: absolute; display: none; pointer-events: none; z-index: 10;
   background: var(--ink); color: var(--page); font-size: 12px;
   padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
@@ -315,10 +368,15 @@ document.querySelectorAll('[data-tip]').forEach(el => {
 });
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab').forEach(b => {
+      b.classList.toggle('active', b === btn);
+      b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+    });
     document.querySelectorAll('.scope').forEach(s => {
       s.style.display = (s.id === btn.dataset.scope) ? '' : 'none';
     });
+    // The recent-changes table is global; keep it in step with the tab.
+    recentFilter.setSource(btn.dataset.source || '');
   });
 });
 function setTheme(mode) {
@@ -328,39 +386,107 @@ function setTheme(mode) {
     if (mode) localStorage.setItem('projxdiff-theme', mode);
     else localStorage.removeItem('projxdiff-theme');
   } catch (e) {}
-  document.querySelectorAll('.themeseg button').forEach(b =>
-    b.classList.toggle('on', (b.dataset.set || '') === (mode || '')));
+  document.querySelectorAll('.themeseg button').forEach(b => {
+    const on = (b.dataset.set || '') === (mode || '');
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
 }
 setTheme((() => { try { return localStorage.getItem('projxdiff-theme') || ''; } catch (e) { return ''; } })());
-(() => {  // Recent-changes date filter (absent when the table is empty)
+// Recent-changes filter: date range + free text + facet chips (from clicking
+// a project/user bar) + the active source tab. Any active filter switches the
+// table from "latest rows" to "all matching rows".
+const recentFilter = (() => {
   const from = document.getElementById('rcFrom');
-  if (!from) return;
+  if (!from) return { setSource() {}, setFacet() {} };
   const to = document.getElementById('rcTo');
+  const text = document.getElementById('rcText');
+  const chips = document.getElementById('rcChips');
   const count = document.getElementById('rcCount');
   const rows = document.querySelectorAll('#recentTable tbody tr');
+  const facets = {};   // {project: 'X', user: 'Y'}
+  let source = '';
+
+  function renderChips() {
+    chips.textContent = '';
+    for (const [kind, value] of Object.entries(facets)) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = kind + ': ' + value + ' ';
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.textContent = '×';
+      x.title = 'Remove this filter';
+      x.addEventListener('click', () => { delete facets[kind]; apply(); });
+      chip.appendChild(x);
+      chips.appendChild(chip);
+    }
+  }
+
   function apply() {
-    const lo = from.value, hi = to.value, active = !!(lo || hi);
+    renderChips();
+    const lo = from.value, hi = to.value;
+    const q = text.value.toLowerCase().trim();
+    const active = !!(lo || hi || q || source || Object.keys(facets).length);
     let shown = 0;
     rows.forEach(tr => {
-      const d = tr.dataset.d;
-      // ISO dates compare correctly as strings; default view = latest rows
-      // (everything not marked .extra at generation time).
-      const show = active ? ((!lo || d >= lo) && (!hi || d <= hi))
-                          : !tr.classList.contains('extra');
+      let show;
+      if (!active) {
+        show = !tr.classList.contains('extra');   // default: latest rows
+      } else {
+        const d = tr.dataset.d;   // ISO dates compare correctly as strings
+        show = (!lo || d >= lo) && (!hi || d <= hi)
+            && (!source || tr.dataset.source === source)
+            && (!facets.project || tr.dataset.project === facets.project)
+            && (!facets.user || tr.dataset.user === facets.user)
+            && (!q || tr.dataset.project.toLowerCase().includes(q)
+                   || tr.dataset.user.toLowerCase().includes(q));
+      }
       tr.style.display = show ? '' : 'none';
       if (show) shown++;
     });
     count.textContent = active
-      ? shown + ' of ' + rows.length + ' rows in range'
+      ? (shown ? shown + ' of ' + rows.length + ' rows match' : 'No rows match')
       : 'latest ' + shown + ' of ' + rows.length + ' rows';
+    count.classList.toggle('nomatch', active && !shown);
   }
+
   from.addEventListener('change', apply);
   to.addEventListener('change', apply);
+  text.addEventListener('input', apply);
   document.getElementById('rcClear').addEventListener('click', () => {
-    from.value = ''; to.value = ''; apply();
+    from.value = ''; to.value = ''; text.value = '';
+    for (const k of Object.keys(facets)) delete facets[k];
+    apply();
   });
   apply();
+
+  return {
+    setSource(name) { source = name; apply(); },
+    setFacet(kind, value) {
+      facets[kind] = value;
+      apply();
+      document.getElementById('recentTable').scrollIntoView(
+        { behavior: 'smooth', block: 'start' });
+    },
+    setDay(d) {
+      from.value = d; to.value = d;
+      apply();
+      document.getElementById('recentTable').scrollIntoView(
+        { behavior: 'smooth', block: 'start' });
+    },
+  };
 })();
+
+// Chart click-through: a rank-chart row filters the table to that project or
+// user; a daily-chart column date-filters the table to that day.
+document.querySelectorAll('rect.rankrow[data-facet]').forEach(r => {
+  r.addEventListener('click', () =>
+    recentFilter.setFacet(r.dataset.facet, r.dataset.value));
+});
+document.querySelectorAll('rect.daycol').forEach(r => {
+  r.addEventListener('click', () => recentFilter.setDay(r.dataset.day));
+});
 """
 
 
@@ -374,7 +500,7 @@ def _scope_sections(d: dict, days: list) -> str:
     </div>'''
 
     if any(d['daily'].values()):
-        activity = _daily_chart(days, d['daily'])
+        activity = _daily_chart(days, d['daily'], d['daily_by_cat'])
     else:
         activity = ('<p class="empty">No activity recorded yet — this fills in after '
                     'the first nightly sync that finds changes.</p>')
@@ -386,9 +512,9 @@ def _scope_sections(d: dict, days: list) -> str:
 </section>
 <div class="row">
   <div class="card"><h2>Top projects &middot; {RANK_WINDOW_DAYS}d</h2>
-    {_rank_chart(d['projects'], 'Changes by project')}</div>
+    {_rank_chart(d['projects'], 'Changes by project', facet='project')}</div>
   <div class="card"><h2>By user &middot; {RANK_WINDOW_DAYS}d</h2>
-    {_rank_chart(d['owners'], 'Changes by user')}</div>
+    {_rank_chart(d['owners'], 'Changes by user', facet='user')}</div>
   <div class="card"><h2>By category &middot; {RANK_WINDOW_DAYS}d</h2>
     {_rank_chart(d['categories'], 'Changes by category')}</div>
 </div>'''
@@ -431,9 +557,15 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
         err_html = ''
 
     if multi:
-        tabs = '<div class="tabs">' + ''.join(
-            f'<button class="tab{" active" if name == "All" else ""}" '
-            f'data-scope="scope-{i}">{escape(name)}</button>'
+        # data-source lets the tab also filter the (global) recent-changes
+        # table — before, switching tabs changed every chart but silently
+        # left the table showing all sources.
+        tabs = '<div class="tabs" role="tablist">' + ''.join(
+            f'<button class="tab{" active" if name == "All" else ""}" role="tab" '
+            f'aria-selected="{"true" if name == "All" else "false"}" '
+            f'data-scope="scope-{i}" '
+            f'data-source="{escape("" if name == "All" else name, quote=True)}">'
+            f'{escape(name)}</button>'
             for i, name in enumerate(scoped)) + '</div>'
         hidden = ' style="display:none"'  # f-string expressions can't hold
         scopes_html = ''.join(            # backslashes before Python 3.12
@@ -452,10 +584,13 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
                 if src else f'reports/{quote(run_date)}/{quote(project)}.html')
         src_cell = f'<td>{escape(src or "—")}</td>' if multi else ''
         # Rows past the default window carry .extra and start hidden; the
-        # date filter reveals whatever range is asked for.
+        # filters reveal whatever slice is asked for.
         extra = ' class="extra"' if i >= RECENT_ROWS else ''
         rows_html.append(
-            f'<tr{extra} data-d="{escape(run_date)}">'
+            f'<tr{extra} data-d="{escape(run_date)}" '
+            f'data-project="{escape(project, quote=True)}" '
+            f'data-user="{escape(owner_disp if owner_disp != "—" else "(unassigned)", quote=True)}" '
+            f'data-source="{escape(src, quote=True)}">'
             f'<td>{escape(run_date)}</td>{src_cell}<td>{escape(project)}</td>'
             f'<td>{escape(owner_disp)}</td>'
             f'<td class="n">+{a}</td><td class="n">-{r}</td><td class="n">~{m}</td>'
@@ -470,6 +605,8 @@ def generate_dashboard(db_path: Path, census_path: Path = None,
             f'max="{escape(newest)}"></label>'
             f'<label>To <input type="date" id="rcTo" min="{escape(oldest)}" '
             f'max="{escape(newest)}"></label>'
+            f'<input type="search" id="rcText" placeholder="Filter project or user...">'
+            f'<span id="rcChips"></span>'
             f'<button type="button" id="rcClear">Clear</button>'
             f'<span id="rcCount"></span></div>')
         recent_html = (
