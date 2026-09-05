@@ -922,3 +922,65 @@ def test_compare_failure_reveals_log_without_modal(tmp_path, monkeypatch):
         assert 'failed' in app.status_label.cget('text')
     finally:
         root.destroy()
+
+
+def test_cancelled_compare_resets_ui_without_writing(tmp_path):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        app = gui_mod.CompareApp(root)
+        app._busy = True
+        app.cancel_btn.grid()
+        app.progress.grid()
+        app._on_done(cancelled=True)
+        assert not app._busy
+        assert 'cancelled' in app.status_label.cget('text')
+        assert not app.cancel_btn.winfo_ismapped()
+    finally:
+        root.destroy()
+
+
+def test_recent_pairs_roundtrip_and_menu(tmp_path):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        app = gui_mod.CompareApp(root)
+        app._remember_pair('/a/old.driveprojx', '/a/new.driveprojx')
+        app._remember_pair('/b/old2.driveprojx', '/b/new2.driveprojx')
+        app._remember_pair('/a/old.driveprojx', '/a/new.driveprojx')  # dedupes to front
+        pairs = gui_mod._load_settings()['recent_pairs']
+        assert pairs[0] == ['/a/old.driveprojx', '/a/new.driveprojx']
+        assert len(pairs) == 2
+        assert 'old.driveprojx' in app.recent_menu.entrycget(0, 'label')
+        app.recent_menu.invoke(0)
+        assert app.old_path.get() == '/a/old.driveprojx'
+        assert app.new_path.get() == '/a/new.driveprojx'
+    finally:
+        root.destroy()
+
+
+def test_run_diagnostics_lands_in_the_log_pane(tmp_path):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        app = gui_mod.CompareApp(root)
+        assert not app.show_log.get()
+        app._run_diagnostics()
+        app._drain_log()
+        assert app.show_log.get()
+        assert 'Diagnostics' in app.log_box.get('1.0', 'end')
+        assert 'Projx Diff' in app.log_box.get('1.0', 'end')
+    finally:
+        root.destroy()

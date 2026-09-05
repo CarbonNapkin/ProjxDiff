@@ -32,12 +32,19 @@ from .update_check import check_for_update, DOWNLOAD_PAGE
 
 try:
     from .__main__ import (resolve_input, cleanup_temp_dirs, resolve_output_path,
-                           resolve_db_names)
+                           resolve_db_names, doctor)
 except ImportError:
     resolve_input = None  # type: ignore
+    doctor = None  # type: ignore
     cleanup_temp_dirs = None  # type: ignore
     resolve_output_path = None  # type: ignore
     resolve_db_names = None  # type: ignore
+
+
+class _CompareCancelled(Exception):
+    """Raised at a stage boundary when the user pressed Cancel. Parsing one
+    project is not interruptible, so cancellation is cooperative: it takes
+    effect between stages, which the status line says honestly."""
 
 
 PROJX_FILETYPES = [('DriveWorks™ project', '*.driveprojx')]
@@ -280,6 +287,8 @@ class CompareApp:
         self.show_log = BooleanVar(value=False)
         self.show_db = BooleanVar(value=False)   # set after settings load
         self._busy = False
+        self._cancel_evt = threading.Event()
+        self._current_pair = None   # (old, new) of the running compare
 
         self.old_path = StringVar()
         self.new_path = StringVar()
@@ -347,6 +356,9 @@ class CompareApp:
         self._build_ui()
         self._drain_log()
         threading.Thread(target=self._check_updates, daemon=True).start()
+        # Enter runs the compare from anywhere in the main window except the
+        # log pane (a Text widget, where Return means a newline).
+        self.root.bind('<Return>', self._on_return)
 
     def _build_menu(self) -> None:
         """Standard menubar with Help. Integrates with the macOS global menu
@@ -355,6 +367,10 @@ class CompareApp:
         menubar = tk.Menu(self.root)
 
         file_menu = tk.Menu(menubar, tearoff=False)
+        self.recent_menu = tk.Menu(file_menu, tearoff=False)
+        file_menu.add_cascade(label='Recent Comparisons', menu=self.recent_menu)
+        self._populate_recent_menu()
+        file_menu.add_separator()
         file_menu.add_command(label='Quit', accelerator='Cmd+Q' if sys.platform == 'darwin' else 'Ctrl+Q',
                               command=self.root.destroy)
         menubar.add_cascade(label='File', menu=file_menu)
@@ -373,6 +389,9 @@ class CompareApp:
 
         help_menu = tk.Menu(menubar, tearoff=False, name='help')
         help_menu.add_command(label='How to Use', command=self._show_help)
+        help_menu.add_command(label='Check for Updates…',
+                              command=self._check_updates_manual)
+        help_menu.add_command(label='Run Diagnostics', command=self._run_diagnostics)
         help_menu.add_separator()
         help_menu.add_command(label='About Projx Diff', command=self._show_about)
         menubar.add_cascade(label='Help', menu=help_menu)
@@ -750,6 +769,16 @@ class CompareApp:
             # that light button is unreadable, so keep dark text there.
             self.compare_btn.configure(fg='#1d2433', activeforeground='#1d2433')
         self.compare_btn.grid(row=0, column=1, sticky='e', padx=(12, 0))
+
+        # Cancel + activity bar, shown only while a compare runs.
+        self.cancel_btn = tk.Button(act, text='Cancel', command=self._cancel_compare,
+                                    highlightthickness=0, relief='flat', cursor='hand2',
+                                    pady=4, padx=12)
+        self.cancel_btn.grid(row=0, column=2, sticky='e', padx=(8, 0))
+        self.cancel_btn.grid_remove()
+        self.progress = ttk.Progressbar(act, mode='indeterminate', length=180)
+        self.progress.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(6, 0))
+        self.progress.grid_remove()
 
         # Filled by a background update check (notify-only; see _check_updates).
         self.update_label = tk.Label(frm, text='', bg=bg, fg='#3f51b5', anchor='w', cursor='hand2')
@@ -1279,12 +1308,18 @@ class CompareApp:
                                ('old_db_user', db['old_user'])):
                 _save_setting(key, value)
 
-        # Clear log, disable button, show progress in the status line.
+        # Clear log, disable button, show progress + a cancel affordance.
         self.log_box.configure(state=NORMAL)
         self.log_box.delete('1.0', END)
         self.log_box.configure(state=DISABLED)
         self.compare_btn.configure(state=DISABLED, text='Comparing…')
         self._busy = True
+        self._cancel_evt.clear()
+        self._current_pair = (str(old), str(new))
+        self.cancel_btn.configure(state=NORMAL, text='Cancel')
+        self.cancel_btn.grid()
+        self.progress.grid()
+        self.progress.start(12)
         self._set_status('⏳ Comparing…', '#3f51b5')
 
         self._worker = threading.Thread(
@@ -1301,7 +1336,15 @@ class CompareApp:
         sys.stdout = writer
         saved = None
         error = None
+        cancelled = False
         db_warnings: list = []
+
+        def ckpt():
+            # Cooperative cancel: honoured at stage boundaries only — the
+            # parsers and comparers have no interruption points inside them.
+            if self._cancel_evt.is_set():
+                raise _CompareCancelled()
+
         try:
             old_name = old.stem if old.suffix.lower() == '.driveprojx' else old.name
             new_name = new.stem if new.suffix.lower() == '.driveprojx' else new.name
@@ -1314,11 +1357,14 @@ class CompareApp:
             if not new_folder.is_dir():
                 raise ValueError(f'{new} is not a directory or .driveprojx file')
 
+            ckpt()
             print(f'Loading old project: {old_name}')
             old_proj = load_project(old_folder)
 
+            ckpt()
             print(f'Loading new project: {new_name}')
             new_proj = load_project(new_folder)
+            ckpt()
 
             old_resolved = new_resolved = None
             old_props = new_props = old_types = new_types = None
@@ -1340,12 +1386,14 @@ class CompareApp:
                     else:
                         new_resolved, new_props, new_types = resolved, props, types
 
+            ckpt()
             print('Generating comparison report...')
             html = generate_html_report(old_proj, new_proj, old_name, new_name,
                                         old_resolved, new_resolved,
                                         old_props, new_props,
                                         old_types, new_types)
 
+            ckpt()   # never write a report the user cancelled
             output.write_text(html, encoding='utf-8')
             saved = str(output.resolve())
             print(f'Report saved to: {saved}')
@@ -1354,6 +1402,9 @@ class CompareApp:
                 # as_uri() keeps the file:// URL well-formed on Windows and
                 # percent-encodes spaces.
                 webbrowser.open(output.resolve().as_uri())
+        except _CompareCancelled:
+            cancelled = True
+            print('\nCompare cancelled.')
         except Exception as e:
             error = str(e)
             print('\nERROR: ' + error)
@@ -1363,13 +1414,20 @@ class CompareApp:
             if cleanup_temp_dirs:
                 cleanup_temp_dirs()  # remove .driveprojx extractions from this run
             self.root.after(0, lambda: self._on_done(saved=saved, error=error,
-                                                     db_warnings=db_warnings))
+                                                     db_warnings=db_warnings,
+                                                     cancelled=cancelled))
 
     def _on_done(self, saved: str | None = None, error: str | None = None,
-                 db_warnings: list = None) -> None:
+                 db_warnings: list = None, cancelled: bool = False) -> None:
         self._busy = False
         db_warnings = db_warnings or []
         self.compare_btn.configure(state=NORMAL, text='Compare')
+        self.cancel_btn.grid_remove()
+        self.progress.stop()
+        self.progress.grid_remove()
+        if cancelled:
+            self._set_status('⏹ Compare cancelled — nothing was written.', '#5f6a76')
+            return
         if error:
             # Bring the details to the user instead of sending them hunting:
             # reveal the log pane (traceback already in it) and scroll to the
@@ -1383,6 +1441,8 @@ class CompareApp:
             # traceback has actually landed in the widget.
             self.root.after(200, lambda: self.log_box.see('end'))
         elif saved:
+            if self._current_pair:
+                self._remember_pair(*self._current_pair)
             note = ' — opened in browser' if self.open_in_browser.get() else ''
             msg = '✅ Report saved to:  ' + saved + note
             if db_warnings:
@@ -1395,6 +1455,94 @@ class CompareApp:
                 self._set_status(msg, '#1b7a3d')
         else:
             self._update_status_idle()
+
+    def _cancel_compare(self) -> None:
+        """Cooperative cancel: honoured at the next stage boundary — say so
+        instead of pretending it is instant."""
+        self._cancel_evt.set()
+        self.cancel_btn.configure(state=DISABLED, text='Cancelling…')
+        self._set_status('⏳ Cancelling — finishing the current stage…', '#5f6a76')
+
+    def _on_return(self, event) -> None:
+        """Enter runs the compare, unless focus is in the log's Text widget
+        (where Return should insert a newline, or at least not fire a run)."""
+        w = event.widget
+        if isinstance(w, tk.Text):
+            return
+        if not self._busy:
+            self._on_compare()
+
+    # ---- Recent comparisons (File menu) ----
+
+    def _remember_pair(self, old: str, new: str) -> None:
+        pairs = _load_settings().get('recent_pairs')
+        pairs = [p for p in pairs if isinstance(p, list) and len(p) == 2] \
+            if isinstance(pairs, list) else []
+        pairs = [[old, new]] + [p for p in pairs if p != [old, new]]
+        _save_setting('recent_pairs', pairs[:6])
+        self._populate_recent_menu()
+
+    def _populate_recent_menu(self) -> None:
+        self.recent_menu.delete(0, END)
+        pairs = _load_settings().get('recent_pairs')
+        pairs = [p for p in pairs if isinstance(p, list) and len(p) == 2] \
+            if isinstance(pairs, list) else []
+        if not pairs:
+            self.recent_menu.add_command(label='(no comparisons yet)', state=DISABLED)
+            return
+        for old, new in pairs:
+            label = f'{Path(old).name}  →  {Path(new).name}'
+            self.recent_menu.add_command(
+                label=label,
+                command=lambda o=old, n=new: self._load_pair(o, n))
+
+    def _load_pair(self, old: str, new: str) -> None:
+        self.old_path.set(old)
+        self.new_path.set(new)
+
+    # ---- Help-menu actions ----
+
+    def _check_updates_manual(self) -> None:
+        """User-initiated update check — unlike the launch check, this one
+        always answers, including 'nothing found'."""
+        def worker():
+            newer = check_for_update()
+            def report():
+                if newer:
+                    self._show_update(newer)
+                    messagebox.showinfo(
+                        'Update available',
+                        f'Projx Diff v{newer} is available — you have '
+                        f'v{__version__}.\n\nClick the update notice under '
+                        'the Compare button to download and install it.')
+                else:
+                    messagebox.showinfo(
+                        'No update found',
+                        f'You have Projx Diff v{__version__}. No newer release '
+                        'was found — or the check could not reach GitHub.')
+            try:
+                self.root.after(0, report)
+            except Exception:
+                pass  # window already closed
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_diagnostics(self) -> None:
+        """Help ▸ Run Diagnostics: the --doctor self-check, without asking
+        anyone to find a terminal and a hidden flag. Output lands in the log
+        pane, revealed."""
+        import contextlib
+        import io
+        buf = io.StringIO()
+        if doctor is None:
+            buf.write('Diagnostics unavailable (CLI module not importable).\n')
+        else:
+            with contextlib.redirect_stdout(buf):
+                doctor()
+        self._log_queue.put('\n--- Diagnostics ---\n' + buf.getvalue())
+        if not self.show_log.get():
+            self.show_log.set(True)
+            self._apply_log_visibility()
+        self.root.after(200, lambda: self.log_box.see('end'))
 
     def _check_updates(self) -> None:
         """Free, fail-silent update check; runs off the UI thread on launch."""

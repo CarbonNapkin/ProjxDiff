@@ -39,6 +39,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   count — including an explicit "No matches" instead of a silently empty
   page.
 
+- **The main window earns its keyboard and its memory.** Enter runs the
+  compare from anywhere but the log pane; a running compare shows an
+  activity bar and a Cancel button (cooperative — it takes effect at the
+  next stage boundary and says so, and a cancelled run never writes a
+  report); File ▸ Recent Comparisons reloads any of the last six pairs.
+  Help gains **Check for Updates…** (the launch check stays passive, this
+  one always answers) and **Run Diagnostics**, which puts the `--doctor`
+  self-check's output in the log pane instead of asking anyone to find a
+  terminal and a hidden flag.
+
 ### Fixed
 
 - **A failed compare now shows its details instead of directions.** The GUI
