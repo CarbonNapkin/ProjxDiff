@@ -18,6 +18,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
   to silently keep showing every source). The dashboard's script block now
   goes through the same `node --check` gate as the report's.
 
+- **Report views are shareable URLs.** The search text, status filters, and
+  section toggles live in the URL hash and are restored on open; every
+  changed row gets a stable id with a hover 🔗 button that copies a link
+  landing the reader on that exact change, revealed and flashed. Stable
+  because archived reports are immutable — the same file always yields the
+  same ids. Section headers are real buttons now (Tab + Enter/Space, with
+  `aria-expanded`), theme and filter controls carry focus outlines and
+  pressed states.
 - **Copy buttons on formula cells in the report.** Hover any formula row for
   a copy button; modified rows get separate "copy old" / "copy new" — the
   inline diff interleaves both versions, so select-copying a modified

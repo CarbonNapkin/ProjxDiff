@@ -151,6 +151,25 @@ def test_lookup_cell_changes_carry_glyphs_not_color_alone():
     assert 'content: "+"' in html
 
 
+def test_deep_link_and_hash_state_machinery_present():
+    html = _report(*_changed_projects())
+    for needle in ('function syncHash', 'function applyHashState',
+                   'function revealTarget', 'function initPermalinks',
+                   'history.replaceState'):
+        assert needle in html, needle
+
+
+def test_section_headers_are_keyboard_accessible():
+    html = _report(*_changed_projects())
+    assert 'role="button" tabindex="0"' in html
+    assert 'aria-expanded=' in html
+    assert 'function toggleSection' in html
+    assert 'function initSectionKeyboard' in html
+    assert ':focus-visible' in html
+    # Theme buttons announce their state.
+    assert 'aria-pressed' in html
+
+
 def test_quiet_sections_marked_and_unchanged_badge_classed():
     old, new = _changed_projects()
     html = _report(old, new)

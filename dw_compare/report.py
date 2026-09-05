@@ -494,6 +494,10 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         .changenav {{ display: inline-flex; align-items: center; gap: 6px; }}
         #navPos, #matchCount {{ color: var(--muted); font-size: 12px; }}
         #matchCount.nomatch {{ color: var(--removed); font-weight: 600; }}
+        td.linkcell {{ position: relative; }}
+        .section-header:focus-visible {{ outline: 2px solid var(--added); outline-offset: -2px; }}
+        .copybtns button:focus-visible, .filter-bar button:focus-visible,
+        .filter-bar input:focus-visible {{ outline: 2px solid var(--added); }}
         tr.flash > td {{ animation: rowflash 1.6s ease-out; }}
         @keyframes rowflash {{
             0%, 35% {{ background: var(--added-soft); box-shadow: inset 0 0 0 1px var(--added); }}
@@ -624,7 +628,9 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
 
         html += f'''
     <div class="section {collapsed}" id="{_slug(section_name)}" data-quiet="{1 if quiet else 0}">
-        <div class="section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+        <div class="section-header" role="button" tabindex="0"
+             aria-expanded="{'false' if collapsed else 'true'}"
+             onclick="toggleSection(this)">
             <span class="title">{section_name}{badges}</span>
             <span class="toggle">▼</span>
         </div>
@@ -643,8 +649,78 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
                 if (mode) localStorage.setItem('projxdiff-theme', mode);
                 else localStorage.removeItem('projxdiff-theme');
             } catch (e) {}
-            document.querySelectorAll('.themeseg button').forEach(b =>
-                b.classList.toggle('on', (b.dataset.set || '') === (mode || '')));
+            document.querySelectorAll('.themeseg button').forEach(b => {
+                const on = (b.dataset.set || '') === (mode || '');
+                b.classList.toggle('on', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+        }
+
+        function setCollapsed(sec, collapsed) {
+            sec.classList.toggle('collapsed', collapsed);
+            const h = sec.querySelector('.section-header');
+            if (h) h.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+
+        function toggleSection(header) {
+            const sec = header.parentElement;
+            setCollapsed(sec, !sec.classList.contains('collapsed'));
+        }
+
+        // ---- Filter state and deep links live in the URL hash ----
+        // Reports are immutable archive files, so a URL that carries the
+        // current search/filters (and optionally one change's id) can be
+        // pasted into an email and lands the reader on the same view.
+        let hashTarget = '';
+
+        function syncHash() {
+            const parts = [];
+            if (hashTarget) parts.push(hashTarget);
+            const q = document.getElementById('searchBox').value.trim();
+            if (q) parts.push('q=' + encodeURIComponent(q));
+            const st = ['showAdded', 'showRemoved', 'showModified', 'showUnchanged']
+                .map((id, i) => document.getElementById(id).checked ? 'armu'[i] : '')
+                .join('');
+            if (st !== 'arm') parts.push('st=' + st);
+            if (document.getElementById('showQuietSections').checked) parts.push('qs=1');
+            if (document.getElementById('showLookupUnchanged').checked) parts.push('lu=1');
+            history.replaceState(null, '',
+                parts.length ? '#' + parts.join('&') : location.pathname + location.search);
+        }
+
+        function applyHashState() {
+            const raw = location.hash.slice(1);
+            if (!raw) return;
+            for (const tok of raw.split('&')) {
+                if (!tok) continue;
+                const eq = tok.indexOf('=');
+                if (eq < 0) { hashTarget = tok; continue; }
+                const k = tok.slice(0, eq), v = decodeURIComponent(tok.slice(eq + 1));
+                if (k === 'q') document.getElementById('searchBox').value = v;
+                else if (k === 'st') {
+                    ['showAdded', 'showRemoved', 'showModified', 'showUnchanged'].forEach(
+                        (id, i) => { document.getElementById(id).checked = v.includes('armu'[i]); });
+                }
+                else if (k === 'qs') document.getElementById('showQuietSections').checked = v === '1';
+                else if (k === 'lu') document.getElementById('showLookupUnchanged').checked = v === '1';
+            }
+        }
+
+        function revealTarget(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const sec = el.closest('.section') || el;
+            if (sec.dataset && sec.dataset.quiet === '1') {
+                const qb = document.getElementById('showQuietSections');
+                if (!qb.checked) { qb.checked = true; applySectionVisibility(); }
+            }
+            if (sec.classList) setCollapsed(sec, false);
+            el.scrollIntoView({ behavior: 'smooth', block: el.tagName === 'TR' ? 'center' : 'start' });
+            if (el.tagName === 'TR') {
+                el.classList.remove('flash');
+                void el.offsetWidth;
+                el.classList.add('flash');
+            }
         }
 
         function filterRows() {
@@ -667,7 +743,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             document.body.classList.toggle('hide-quiet', !quietBox.checked);
             if (showUnchanged) {
                 document.querySelectorAll('.section[data-quiet="1"]').forEach(
-                    sec => sec.classList.remove('collapsed')
+                    sec => setCollapsed(sec, false)
                 );
             }
 
@@ -738,6 +814,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             });
 
             updateChangeNav(searchText);
+            syncHash();
         }
 
         // ---- Prev/next change navigation + search feedback ----
@@ -772,7 +849,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
             // Reveal the section the target lives in (a changed row is never
             // in a quiet section, but its section may be collapsed).
             const sec = row.closest('.section');
-            if (sec) sec.classList.remove('collapsed');
+            if (sec) setCollapsed(sec, false);
             row.scrollIntoView({ behavior: 'smooth', block: 'center' });
             row.classList.remove('flash');
             void row.offsetWidth;  // restart the animation
@@ -863,35 +940,70 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         function applySectionVisibility() {
             const show = document.getElementById('showQuietSections').checked;
             document.body.classList.toggle('hide-quiet', !show);
+            syncHash();
         }
 
         function applyLookupRowVisibility() {
             const show = document.getElementById('showLookupUnchanged').checked;
             document.body.classList.toggle('show-lookup-unchanged', show);
+            syncHash();
         }
 
         function expandAll(open) {
-            document.querySelectorAll('.section').forEach(s => {
-                if (open) s.classList.remove('collapsed');
-                else s.classList.add('collapsed');
-            });
+            document.querySelectorAll('.section').forEach(s => setCollapsed(s, !open));
         }
 
         function initNav() {
             document.querySelectorAll('.navitem').forEach(a => {
                 a.addEventListener('click', e => {
                     e.preventDefault();
-                    const sec = document.getElementById(a.dataset.sec);
-                    if (!sec) return;
-                    // A quiet section may be hidden entirely; reveal the
-                    // quiet set before jumping so the scroll has a target.
-                    if (sec.dataset.quiet === '1') {
-                        const qb = document.getElementById('showQuietSections');
-                        if (!qb.checked) { qb.checked = true; applySectionVisibility(); }
-                    }
-                    sec.classList.remove('collapsed');
-                    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    hashTarget = a.dataset.sec;
+                    syncHash();
+                    revealTarget(a.dataset.sec);
                 });
+            });
+        }
+
+        function initSectionKeyboard() {
+            document.querySelectorAll('.section-header').forEach(h => {
+                h.addEventListener('keydown', e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleSection(h);
+                    }
+                });
+            });
+        }
+
+        // Stable per-file permalinks: reports are immutable once archived, so
+        // an index-based id identifies the same change for every reader of
+        // this file. The 🔗 button stamps the id into the hash and copies the
+        // full URL.
+        function initPermalinks() {
+            document.querySelectorAll('.section').forEach(sec => {
+                let n = 0;
+                sec.querySelectorAll('tbody tr.added, tbody tr.removed, tbody tr.modified')
+                    .forEach(tr => {
+                        const id = sec.id + '-c' + (++n);
+                        tr.id = id;
+                        const cell = tr.cells[0];
+                        if (!cell) return;
+                        cell.classList.add('linkcell');
+                        const wrap = document.createElement('span');
+                        wrap.className = 'copybtns';
+                        const b = document.createElement('button');
+                        b.type = 'button';
+                        b.textContent = '🔗';
+                        b.title = 'Copy a link to this change';
+                        b.addEventListener('click', e => {
+                            e.stopPropagation();
+                            hashTarget = id;
+                            syncHash();
+                            copyText(location.href, b);
+                        });
+                        wrap.appendChild(b);
+                        cell.appendChild(wrap);
+                    });
             });
         }
 
@@ -949,12 +1061,16 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
 
         // Default: hide sections with no changes; user can toggle them back on.
         setTheme((() => { try { return localStorage.getItem('projxdiff-theme') || ''; } catch (e) { return ''; } })());
+        applyHashState();          // restore filters/target from a shared URL
         applySectionVisibility();
         applyLookupRowVisibility();
         filterRows();
         initNav();
+        initSectionKeyboard();
         initColumnResize();
         initCopyButtons();
+        initPermalinks();          // ids must exist before the jump below
+        if (hashTarget) revealTarget(hashTarget);
     </script>
     <footer>
         Projx Diff v''' + __version__ + ''' &middot;
