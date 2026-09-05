@@ -466,7 +466,39 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         }}
         table.lookup-grid td.cell-added {{ background: var(--row-added-strong); }}
         table.lookup-grid td.cell-removed {{ background: var(--row-removed-strong); }}
+        /* Colorblind-safe glyphs on changed lookup cells — everywhere else a
+           change carries a labeled badge; a background wash alone must never
+           be the only signal. Generated content stays out of copied text. */
+        table.lookup-grid td.cell-added, table.lookup-grid td.cell-removed,
+        table.lookup-grid td.cell-changed {{ position: relative; padding-right: 15px; }}
+        table.lookup-grid td.cell-added::after, table.lookup-grid td.cell-removed::after,
+        table.lookup-grid td.cell-changed::after {{
+            position: absolute; top: 1px; right: 3px; font-size: 10px;
+            font-weight: 700; opacity: 0.85;
+        }}
+        table.lookup-grid td.cell-added::after {{ content: "+"; color: var(--added); }}
+        table.lookup-grid td.cell-removed::after {{ content: "\\2212"; color: var(--removed); }}
+        table.lookup-grid td.cell-changed::after {{ content: "~"; color: var(--modified); }}
         body:not(.show-lookup-unchanged) table.lookup-grid tbody tr.unchanged {{ display: none; }}
+        /* Copy buttons on formula cells: invisible until the row is hovered
+           or the button is keyboard-focused, so tables stay scannable. */
+        td.formula {{ position: relative; }}
+        .copybtns {{ position: absolute; top: 2px; right: 2px; display: flex; gap: 3px;
+            opacity: 0; transition: opacity 0.12s; }}
+        tr:hover .copybtns, .copybtns:focus-within {{ opacity: 1; }}
+        .copybtns button {{ border: 1px solid var(--border); background: var(--sechead);
+            color: var(--muted); border-radius: 5px; font: inherit; font-size: 10px;
+            padding: 1px 6px; cursor: pointer; }}
+        .copybtns button:hover {{ color: var(--ink); }}
+        /* Prev/next change navigation + search feedback in the filter bar. */
+        .changenav {{ display: inline-flex; align-items: center; gap: 6px; }}
+        #navPos, #matchCount {{ color: var(--muted); font-size: 12px; }}
+        #matchCount.nomatch {{ color: var(--removed); font-weight: 600; }}
+        tr.flash > td {{ animation: rowflash 1.6s ease-out; }}
+        @keyframes rowflash {{
+            0%, 35% {{ background: var(--added-soft); box-shadow: inset 0 0 0 1px var(--added); }}
+            100% {{ }}
+        }}
 
         .formula {{
             font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
@@ -569,6 +601,12 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         <label><input type="checkbox" id="showLookupUnchanged" onchange="applyLookupRowVisibility()"> Show unchanged lookup rows</label>
         <button onclick="expandAll(true)">Expand all</button>
         <button onclick="expandAll(false)">Collapse all</button>
+        <span class="changenav">
+            <button onclick="jumpChange(-1)" title="Previous change (p)">&#8593; Prev</button>
+            <button onclick="jumpChange(1)" title="Next change (n)">Next &#8595;</button>
+            <span id="navPos"></span>
+        </span>
+        <span id="matchCount" role="status"></span>
     </div>
 '''
 
@@ -698,6 +736,128 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
                 const searchMatch = !searchText || h3.textContent.toLowerCase().includes(searchText);
                 h3.style.display = (statusMatch && searchMatch) ? '' : 'none';
             });
+
+            updateChangeNav(searchText);
+        }
+
+        // ---- Prev/next change navigation + search feedback ----
+        let changeRows = [];
+        let changeIdx = -1;
+
+        function updateChangeNav(searchText) {
+            changeRows = Array.from(document.querySelectorAll(
+                'tbody tr.added, tbody tr.removed, tbody tr.modified')).filter(r =>
+                    r.style.display !== 'none' &&
+                    (!r.closest('table') || r.closest('table').style.display !== 'none'));
+            changeIdx = -1;
+            document.getElementById('navPos').textContent =
+                changeRows.length ? changeRows.length + ' changes' : '';
+            const mc = document.getElementById('matchCount');
+            if (searchText) {
+                const visible = Array.from(document.querySelectorAll('tbody tr')).filter(r =>
+                    !r.querySelector('.empty') && r.style.display !== 'none').length;
+                mc.textContent = visible === 0 ? 'No matches'
+                    : visible + (visible === 1 ? ' match' : ' matches');
+                mc.classList.toggle('nomatch', visible === 0);
+            } else {
+                mc.textContent = '';
+                mc.classList.remove('nomatch');
+            }
+        }
+
+        function jumpChange(dir) {
+            if (!changeRows.length) return;
+            changeIdx = (changeIdx + dir + changeRows.length) % changeRows.length;
+            const row = changeRows[changeIdx];
+            // Reveal the section the target lives in (a changed row is never
+            // in a quiet section, but its section may be collapsed).
+            const sec = row.closest('.section');
+            if (sec) sec.classList.remove('collapsed');
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.remove('flash');
+            void row.offsetWidth;  // restart the animation
+            row.classList.add('flash');
+            document.getElementById('navPos').textContent =
+                (changeIdx + 1) + ' / ' + changeRows.length;
+        }
+
+        document.addEventListener('keydown', e => {
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+                if (e.key === 'Escape') t.blur();
+                return;
+            }
+            if (e.key === 'n') jumpChange(1);
+            else if (e.key === 'p') jumpChange(-1);
+            else if (e.key === '/') {
+                e.preventDefault();
+                document.getElementById('searchBox').focus();
+            }
+        });
+
+        // ---- Copy buttons on formula cells ----
+        // A modified cell interleaves old (span.removed) and new (span.added)
+        // tokens, so select-copy grabs both mixed together; these extract one
+        // clean side. Notes and the buttons themselves never leak into the
+        // copied text.
+        function formulaText(td, side) {
+            const clone = td.cloneNode(true);
+            clone.querySelectorAll('.attr-note, .copybtns').forEach(n => n.remove());
+            if (side === 'old') clone.querySelectorAll('span.added').forEach(n => n.remove());
+            if (side === 'new') clone.querySelectorAll('span.removed').forEach(n => n.remove());
+            return clone.textContent.trim();
+        }
+
+        function copyText(text, btn) {
+            const done = () => {
+                const label = btn.textContent;
+                btn.textContent = '✓';
+                setTimeout(() => { btn.textContent = label; }, 900);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+            } else {
+                fallbackCopy(text, done);
+            }
+        }
+
+        function fallbackCopy(text, done) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); done(); } catch (e) {}
+            ta.remove();
+        }
+
+        function initCopyButtons() {
+            document.querySelectorAll('td.formula').forEach(td => {
+                const hasDiff = td.querySelector('span.added') && td.querySelector('span.removed');
+                const plain = formulaText(td, 'all');
+                if (!plain || plain === '(blank)') return;
+                const wrap = document.createElement('span');
+                wrap.className = 'copybtns';
+                const add = (label, side, title) => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = label;
+                    b.title = title;
+                    b.addEventListener('click', e => {
+                        e.stopPropagation();
+                        copyText(formulaText(td, side), b);
+                    });
+                    wrap.appendChild(b);
+                };
+                if (hasDiff) {
+                    add('⧉ old', 'old', 'Copy the old formula');
+                    add('⧉ new', 'new', 'Copy the new formula');
+                } else {
+                    add('⧉', 'all', 'Copy formula');
+                }
+                td.appendChild(wrap);
+            });
         }
 
         function applySectionVisibility() {
@@ -794,6 +954,7 @@ def generate_html_report(old_proj: DWProject, new_proj: DWProject,
         filterRows();
         initNav();
         initColumnResize();
+        initCopyButtons();
     </script>
     <footer>
         Projx Diff v''' + __version__ + ''' &middot;

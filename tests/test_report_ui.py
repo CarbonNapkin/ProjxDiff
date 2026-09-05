@@ -122,6 +122,35 @@ def test_all_interactive_machinery_present():
         assert needle in html, needle
 
 
+def test_copy_buttons_machinery_present():
+    html = _report(*_changed_projects())
+    # JS builds the buttons at load; the extractor strips one diff side so a
+    # modified cell can yield a clean old or new formula.
+    for needle in ('function initCopyButtons', 'function formulaText',
+                   'function copyText', 'function fallbackCopy', '.copybtns'):
+        assert needle in html, needle
+    # Extraction must drop notes and the buttons themselves from copied text.
+    assert "querySelectorAll('.attr-note, .copybtns')" in html
+
+
+def test_change_navigation_and_search_feedback_present():
+    html = _report(*_changed_projects())
+    for needle in ('function jumpChange', 'function updateChangeNav',
+                   'id="navPos"', 'id="matchCount"', "e.key === 'n'",
+                   "e.key === 'p'", 'No matches'):
+        assert needle in html, needle
+
+
+def test_lookup_cell_changes_carry_glyphs_not_color_alone():
+    # The lookup grid was the one surface where a change was signaled by
+    # background wash alone; the CSS glyphs close that gap.
+    html = _report()
+    assert 'td.cell-added::after' in html
+    assert 'td.cell-removed::after' in html
+    assert 'td.cell-changed::after' in html
+    assert 'content: "+"' in html
+
+
 def test_quiet_sections_marked_and_unchanged_badge_classed():
     old, new = _changed_projects()
     html = _report(old, new)

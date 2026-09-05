@@ -4,6 +4,34 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Copy buttons on formula cells in the report.** Hover any formula row for
+  a copy button; modified rows get separate "copy old" / "copy new" — the
+  inline diff interleaves both versions, so select-copying a modified
+  formula used to hand you the two mixed together, which is exactly wrong
+  for pasting back into DriveWorks Administrator. Notes and the buttons
+  themselves never leak into the copied text.
+- **Change-to-change navigation in the report.** Prev/Next buttons (and
+  `n`/`p` keys) step through every change that survives the current filters,
+  auto-expanding collapsed sections and flashing the target row; a counter
+  shows position. `/` focuses the search box, which now reports its match
+  count — including an explicit "No matches" instead of a silently empty
+  page.
+
+### Fixed
+
+- **A failed compare now shows its details instead of directions.** The GUI
+  reveals the log pane with the traceback scrolled into view and states the
+  failure in the red status line — no more modal telling you to go find
+  View ▸ Show Log.
+- **Lookup-grid cell changes are no longer color-only.** Changed/added/
+  removed cells carry a +/−/~ glyph in the corner, closing the one gap in
+  the report's colorblind-safe design (every other change signal already
+  had a text label or glyph).
+
 ## [1.11.0] - 2026-09-04
 
 ### Added

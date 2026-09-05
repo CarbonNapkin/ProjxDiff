@@ -1371,13 +1371,17 @@ class CompareApp:
         db_warnings = db_warnings or []
         self.compare_btn.configure(state=NORMAL, text='Compare')
         if error:
-            # The traceback is in the (possibly hidden) log; make sure the user
-            # can't miss the failure itself.
-            self._set_status('⚠ Comparison failed — open View ▸ Show Log for details', '#c0392b')
-            messagebox.showerror(
-                'Comparison failed',
-                error + '\n\nOpen View ▸ Show Log for the full details.',
-            )
+            # Bring the details to the user instead of sending them hunting:
+            # reveal the log pane (traceback already in it) and scroll to the
+            # end. The red status line carries the failure itself, so no modal
+            # to dismiss before reading.
+            self._set_status('⚠ Comparison failed — details in the log below', '#c0392b')
+            if not self.show_log.get():
+                self.show_log.set(True)
+                self._apply_log_visibility()
+            # The log drains from a queue on an 80 ms timer; scroll after the
+            # traceback has actually landed in the widget.
+            self.root.after(200, lambda: self.log_box.see('end'))
         elif saved:
             note = ' — opened in browser' if self.open_in_browser.get() else ''
             msg = '✅ Report saved to:  ' + saved + note

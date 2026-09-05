@@ -899,3 +899,26 @@ def test_help_scrolls_instead_of_growing_off_screen():
         assert top.winfo_reqwidth() >= inner.winfo_reqwidth(), 'help text is clipped'
     finally:
         root.destroy()
+
+
+# ---------- compare failure surfaces the log, not a modal ----------
+
+def test_compare_failure_reveals_log_without_modal(tmp_path, monkeypatch):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip('no display available')
+    root.withdraw()
+    try:
+        app = gui_mod.CompareApp(root)
+        # A modal here would block a headless run and hide the details behind
+        # an extra click; the failure path must never open one.
+        monkeypatch.setattr(gui_mod.messagebox, 'showerror',
+                            lambda *a, **k: pytest.fail('failure path opened a modal'))
+        assert not app.show_log.get()
+        app._on_done(error='synthetic parse failure')
+        assert app.show_log.get()               # log pane revealed
+        assert 'failed' in app.status_label.cget('text')
+    finally:
+        root.destroy()
