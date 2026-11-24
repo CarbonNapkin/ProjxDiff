@@ -32,8 +32,9 @@ from .update_check import check_for_update, DOWNLOAD_PAGE
 
 try:
     from .__main__ import (resolve_input, cleanup_temp_dirs, resolve_output_path,
-                           resolve_db_names, doctor)
+                           resolve_db_names, doctor, output_problem)
 except ImportError:
+    output_problem = None  # type: ignore
     resolve_input = None  # type: ignore
     doctor = None  # type: ignore
     cleanup_temp_dirs = None  # type: ignore
@@ -1312,6 +1313,10 @@ class CompareApp:
         # Anchor a bare/relative filename to a writable folder so a
         # double-clicked app (read-only cwd) can't fail with a read-only error.
         output = resolve_output_path(out_raw) if resolve_output_path else Path(out_raw or 'dw_comparison.html')
+        problem = output_problem(output, old, new) if output_problem else None
+        if problem:
+            messagebox.showerror('Report location', problem[0].upper() + problem[1:])
+            return
         open_browser = self.open_in_browser.get()
 
         # Snapshot DB fields on the UI thread (Tk vars aren't thread-safe)

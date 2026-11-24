@@ -19,16 +19,17 @@ import os
 import re
 import tempfile
 import zipfile
+from pathlib import Path
 import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from dw_compare import components as C  # noqa: E402
+from dw_compare.sync import safe_extract  # noqa: E402
 
 
 def unzip(path: str) -> str:
     tmp = tempfile.mkdtemp(prefix="dw_preview_")
-    with zipfile.ZipFile(path) as z:
-        z.extractall(tmp)
+    safe_extract(path, Path(tmp))
     return tmp
 
 

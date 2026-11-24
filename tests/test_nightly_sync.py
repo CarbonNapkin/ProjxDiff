@@ -678,3 +678,166 @@ def test_dry_run_does_not_create_or_touch_the_archive_repo(site):
     cfg_before = (site['repo'] / '.git' / 'config').read_text(encoding='utf-8')
     assert _run(site, dry_run=True) == 0
     assert (site['repo'] / '.git' / 'config').read_text(encoding='utf-8') == cfg_before
+
+
+# ------------------------------------------------- archive safety guards ----
+#
+# The archive is the only tree the sync deletes from, and every path it
+# deletes is <archive_repo>/<project name> -- the same shape DriveWorks uses
+# for a live project folder. These pin down that a wrong archive_repo is
+# refused before anything is removed.
+
+def _live_share(root: Path) -> Path:
+    """A share laid out the way DriveWorks lays it out: one folder per
+    project holding the .driveprojx and the files that live beside it."""
+    for name, rule in (('Alpha', '=800'), ('Beta', '=300')):
+        _write_projx(root / name / f'{name}.driveprojx', {'Width': rule})
+        (root / name / 'Model.SLDPRT').write_bytes(b'solid model')
+    (root / 'MasterModels').mkdir()
+    (root / 'MasterModels' / 'Part.SLDPRT').write_bytes(b'master')
+    return root
+
+
+def _tree(root: Path) -> dict:
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob('*')) if p.is_file()}
+
+
+def _legacy_cfg(tmp_path, source, repo, **extra):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({'source_dir': str(source), 'archive_repo': str(repo),
+                                'data_dir': str(tmp_path / 'data'), **extra}),
+                    encoding='utf-8')
+    return path
+
+
+@pytest.mark.parametrize('repo_of', [
+    lambda share: share,                 # the share itself
+    lambda share: share.parent,          # a parent of the share
+])
+def test_archive_repo_overlapping_the_source_is_refused_at_load(tmp_path, repo_of):
+    share = _live_share(tmp_path / 'top' / 'share')
+    cfg_path = _legacy_cfg(tmp_path, share, repo_of(share), remove_missing=True)
+    with pytest.raises(SystemExit, match='archive_repo'):
+        nightly_sync.load_config(cfg_path)
+
+
+def test_archive_repo_aliasing_the_source_deletes_nothing(tmp_path):
+    """The same folder under a second name (UNC vs drive letter in the field,
+    a symlink here) gets past any path comparison. The run must still refuse,
+    and the live share must come through byte-for-byte."""
+    share = _live_share(tmp_path / 'share')
+    alias = tmp_path / 'alias'
+    try:
+        alias.symlink_to(share, target_is_directory=True)
+    except OSError:
+        pytest.skip('symlinks unavailable')
+    before = _tree(share)
+    cfg = nightly_sync.load_config(
+        _legacy_cfg(tmp_path, share, alias, remove_missing=True))
+    for dry in (True, False):
+        assert nightly_sync.run(cfg, dry) == 1
+        assert _tree(share) == before
+        assert not (share / '.git').exists()
+
+
+def test_a_populated_project_folder_is_never_adopted_as_an_archive(tmp_path):
+    """archive_repo pointed at some OTHER live share (staging, say): nothing
+    ties it to source_dir, but it holds project files, so it is not ours."""
+    source = tmp_path / 'prod'
+    _write_projx(source / 'Alpha' / 'Alpha.driveprojx', {'Width': '=1'})
+    other = _live_share(tmp_path / 'staging')
+    before = _tree(other)
+    cfg = nightly_sync.load_config(
+        _legacy_cfg(tmp_path, source, other, remove_missing=True))
+    assert nightly_sync.run(cfg, False) == 1
+    assert _tree(other) == before
+    assert not (other / '.git').exists()
+
+
+def test_a_non_empty_folder_without_git_is_not_taken_over(tmp_path):
+    source = tmp_path / 'prod'
+    _write_projx(source / 'Alpha.driveprojx', {'Width': '=1'})
+    docs = tmp_path / 'docs'
+    (docs / 'Alpha').mkdir(parents=True)
+    (docs / 'Alpha' / 'notes.txt').write_text('keep me', encoding='utf-8')
+    cfg = nightly_sync.load_config(_legacy_cfg(tmp_path, source, docs))
+    assert nightly_sync.run(cfg, False) == 1
+    assert (docs / 'Alpha' / 'notes.txt').read_text(encoding='utf-8') == 'keep me'
+    assert not (docs / '.git').exists()
+
+
+def test_a_bad_archive_skips_only_its_own_source(tmp_path):
+    good_src = tmp_path / 'good'
+    _write_projx(good_src / 'Alpha.driveprojx', {'Width': '=1'})
+    bad_src = tmp_path / 'bad'
+    _write_projx(bad_src / 'Beta.driveprojx', {'Width': '=1'})
+    taken = _live_share(tmp_path / 'taken')
+    before = _tree(taken)
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({
+        'data_dir': str(tmp_path / 'data'),
+        'sources': {
+            'good': {'source_dir': str(good_src), 'archive_repo': str(tmp_path / 'r1')},
+            'bad': {'source_dir': str(bad_src), 'archive_repo': str(taken)},
+        }}), encoding='utf-8')
+    assert nightly_sync.run(nightly_sync.load_config(path), False) == 1
+    assert (tmp_path / 'r1' / 'Alpha').is_dir()
+    assert _tree(taken) == before
+
+
+def test_two_sources_cannot_share_an_archive(tmp_path):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({
+        'data_dir': str(tmp_path / 'data'),
+        'sources': {
+            'prod': {'source_dir': str(tmp_path / 'p'), 'archive_repo': str(tmp_path / 'r')},
+            'staging': {'source_dir': str(tmp_path / 's'), 'archive_repo': str(tmp_path / 'r')},
+        }}), encoding='utf-8')
+    with pytest.raises(SystemExit, match='archive'):
+        nightly_sync.load_config(path)
+
+
+def test_data_dir_inside_the_archive_is_refused(tmp_path):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({
+        'source_dir': str(tmp_path / 'share'), 'archive_repo': str(tmp_path / 'repo'),
+        'data_dir': str(tmp_path / 'repo' / 'data')}), encoding='utf-8')
+    with pytest.raises(SystemExit, match='data_dir'):
+        nightly_sync.load_config(path)
+
+
+@pytest.mark.parametrize('stem', ['.', '.git', 'Alpha.'])
+def test_a_project_name_that_escapes_its_archive_folder_is_skipped(site, stem):
+    """<archive>/. is the archive, <archive>/.git its history, and Windows
+    turns "Alpha." into "Alpha" -- each would have the changed-project path
+    delete something that is not this project's archived copy."""
+    assert _run(site) == 0
+    log_before = _git_log(site['repo'])
+    _write_projx(site['source'] / f'{stem}.driveprojx', {'Other': '=1'})
+    assert _run(site) == 1
+    assert (site['repo'] / '.git').is_dir()
+    assert (site['repo'] / 'Alpha' / 'driveProj' / 'project.xml').is_file()
+    assert _git_log(site['repo']) == log_before
+
+
+def test_an_existing_archive_keeps_working(site):
+    """The guards must not lock a healthy site out of its own archive."""
+    assert _run(site) == 0
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=900'})
+    assert _run(site) == 0
+    assert 'Alpha: +' in _git_log(site['repo'])[0][0] or 'Alpha' in _git_log(site['repo'])[0][0]
+
+
+def test_a_source_showing_no_projects_is_not_every_project_removed(site):
+    """Wrong subfolder, a share mounted empty, an exclude that matches
+    everything: none of them mean the site deleted all its projects."""
+    assert _run(site) == 0
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg.update(remove_missing=True, exclude=['*'])
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+    assert _run(site) == 1
+    assert (site['repo'] / 'Alpha').is_dir() and (site['repo'] / 'Beta').is_dir()
+    with _db(site) as db:
+        assert db.execute("SELECT COUNT(*) FROM element_changes "
+                          "WHERE status='removed'").fetchone()[0] == 0

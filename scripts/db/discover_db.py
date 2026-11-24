@@ -27,12 +27,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from dw_compare import dbsource            # noqa: E402
 from dw_compare import components as C     # noqa: E402
+from dw_compare.sync import safe_extract  # noqa: E402
 
 
 def ids_from_projx(path: str) -> set:
     tmp = tempfile.mkdtemp(prefix="dw_disc_")
-    with zipfile.ZipFile(path) as z:
-        z.extractall(tmp)
+    safe_extract(path, Path(tmp))
     idx = C.build_component_index(tmp)
     return idx.all_lookup_keys()
 

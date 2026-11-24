@@ -94,6 +94,34 @@ def resolve_output_path(raw: str) -> Path:
     return p
 
 
+def output_problem(output: Path, *inputs: Path):
+    """Why a report must not be written to `output`, or None.
+
+    The report path is typed or picked by hand right next to the two project
+    paths, and write_text replaces whatever is there without asking -- so the
+    one mistake that matters is the report landing on a project. A project
+    file is never a valid place for a report, whichever project it is."""
+    output = Path(output)
+    if output.suffix.lower() in ('.driveprojx', '.~driveproj'):
+        return (f'{output.name} is a DriveWorks project file -- the report '
+                'would overwrite it. Choose a .html (or .json) file name.')
+    if output.is_dir():
+        return f'{output} is a folder -- give the report a file name.'
+    for src in inputs:
+        if src is None:
+            continue
+        src = Path(src)
+        try:
+            same = output.exists() and src.exists() and os.path.samefile(output, src)
+        except OSError:
+            same = False
+        if same or os.path.normcase(os.path.abspath(output)) == \
+                os.path.normcase(os.path.abspath(src)):
+            return (f'the report path is one of the projects being compared '
+                    f'({src}) -- it would be overwritten.')
+    return None
+
+
 EXCLUDED_DIRS = {
     'dw_compare', '__pycache__', 'node_modules',
     'dist', 'build', 'venv', '.venv', 'env',
@@ -405,6 +433,15 @@ Examples:
     if args.output is None:
         args.output = Path('dw_comparison.json' if args.format == 'json'
                            else 'dw_comparison.html')
+
+    targets = [args.output]
+    if args.format == 'both':
+        targets.append(args.output.with_suffix('.json'))
+    for target in targets:
+        problem = output_problem(target, args.old_project, args.new_project)
+        if problem:
+            print(f"Error: {problem}")
+            sys.exit(1)
 
     html_path = None
     old_db_error = new_db_error = None

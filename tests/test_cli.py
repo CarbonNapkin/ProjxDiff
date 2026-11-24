@@ -372,3 +372,18 @@ def test_the_console_build_is_recognised_by_its_own_filename(monkeypatch, exe, i
     mod = _entry_point()
     monkeypatch.setattr(sys, 'executable', exe)
     assert mod._is_cli_build() is is_cli
+
+
+def test_report_is_never_written_over_a_project(tmp_path):
+    old = tmp_path / 'Old.driveprojx'
+    new = tmp_path / 'New.driveprojx'
+    for p in (old, new):
+        p.write_bytes(b'project')
+    assert cli.output_problem(new, old, new)
+    assert cli.output_problem(tmp_path / 'Other.DRIVEPROJX', old, new)
+    assert cli.output_problem(tmp_path, old, new)                 # a folder
+    folder = tmp_path / 'proj'
+    folder.mkdir()
+    assert cli.output_problem(folder, folder, new)
+    assert cli.output_problem(tmp_path / 'report.html', old, new) is None
+    assert cli.output_problem(tmp_path / 'report.json', old, new) is None

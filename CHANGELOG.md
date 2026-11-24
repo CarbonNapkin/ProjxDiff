@@ -4,6 +4,48 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.12.1] - 2026-11-24
+
+### Fixed
+
+- **The nightly sync can no longer be pointed at a live project folder and
+  delete from it.** The archive is the one tree the sync removes things
+  from — a changed project's archived copy is deleted and rewritten, and
+  `remove_missing` prunes what the share no longer has — and each of those
+  paths is `<archive_repo>/<project name>`, which is exactly where
+  DriveWorks keeps a live project. A hand-edited config whose `archive_repo`
+  was the project share (or a parent of it) would have had the sync replace
+  real project folders with extracted XML. Nothing in the field is known to
+  have been configured this way; configs written by Manage Nightly Sync
+  always place the archive under `repos/`. Now:
+  - a config is refused at load when `archive_repo` is, or contains, any
+    `source_dir`; when two sources share or nest an archive; or when
+    `data_dir` sits inside an archive;
+  - at run time — dry runs included — a source is skipped, untouched, when
+    its `archive_repo` turns out to be the same folder as `source_dir` under
+    another name (UNC path vs. drive letter, mapped drive, junction), holds
+    `.driveprojx` files, or is a non-empty folder that is not already an
+    archive. Other sources still sync; the run exits non-zero and names the
+    problem.
+- **A project file whose name would not land in its own archive folder is
+  skipped with an error** instead of archived: a name starting with a dot
+  (`.git.driveprojx` resolved to the archive's own history) or ending in a
+  dot or space (which Windows silently folds onto another project's folder).
+- **A share that suddenly shows no project files is no longer read as
+  "every project was deleted".** A wrong subfolder, a share mounted empty or
+  an exclude pattern that matches everything used to record a `removed`
+  event for each archived project and, with `remove_missing`, empty the
+  archive's working tree. When a source yields nothing and its archive holds
+  more than one live project, the source is now reported as an error and
+  left alone.
+- **A comparison report can no longer be saved over a project.** The report
+  path sits beside the two project paths and was written without a check, so
+  `-o New.driveprojx` (or the same slip in the app's output box) replaced
+  the project file with HTML. Both the CLI and the app now refuse a
+  `.driveprojx` report path, a folder, or either project being compared.
+- The developer scripts under `scripts/db/` extract uploaded/opened project
+  files through the same path-traversal check as the app itself.
+
 ## [1.12.0] - 2026-09-05
 
 ### Added

@@ -39,12 +39,14 @@ import tempfile
 import threading
 import webbrowser
 import zipfile
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 # Two levels up: this file lives in scripts/db/ inside the repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from dw_compare import components as C
+from dw_compare.sync import safe_extract
 from dw_compare import dbsource
 
 PORT = 8765
@@ -594,8 +596,7 @@ def connection_fields(side: str, fields: dict) -> dict:
 
 def extract_projx(data: bytes) -> str:
     tmp = tempfile.mkdtemp(prefix="dw_web_")
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
-        z.extractall(tmp)
+    safe_extract(io.BytesIO(data), Path(tmp))
     return tmp
 
 

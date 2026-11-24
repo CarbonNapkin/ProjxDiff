@@ -29,6 +29,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -194,6 +195,111 @@ def _validate_tuning(cfg: dict) -> None:
         cfg[key] = val
 
 
+def _norm(p) -> str:
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
+def _within(inner, outer) -> bool:
+    """True when `inner` is `outer` or lies beneath it (lexically; case-
+    insensitive on Windows)."""
+    a, b = _norm(inner), _norm(outer)
+    return a == b or a.startswith(b.rstrip('\\/') + os.sep)
+
+
+def _validate_layout(cfg: dict) -> None:
+    """Refuse a config whose archive overlaps anything it must never touch.
+
+    The archive is the one tree this tool deletes from: a changed project's
+    archived copy is removed and replaced, and remove_missing prunes whatever
+    the source no longer has. Every one of those paths is built as
+    <archive_repo>/<project name>, and DriveWorks keeps a project at
+    <share>/<project name>/<project name>.driveprojx -- so an archive_repo
+    that IS the share makes "the archived copy" the live project folder. No
+    amount of care further down can tell the two apart; the config has to be
+    wrong-proof here.
+
+    Lexical only: a UNC path and a drive letter naming the same folder look
+    unrelated here. archive_problem() covers that at run time by looking at
+    what is actually in the folder."""
+    sources = cfg['sources_resolved']
+    for name, scfg in sources.items():
+        label = f'source "{name}"' if name else 'config'
+        repo, src = scfg['archive_repo'], scfg['source_dir']
+        if _within(src, repo):
+            raise SystemExit(
+                f'config error: {label}: archive_repo ({repo}) is, or contains, '
+                f'source_dir ({src}). The archive is deleted from and rewritten '
+                'on every run; it must be a folder of its own, away from the '
+                'DriveWorks project files.')
+        if _within(cfg['data_dir'], repo):
+            raise SystemExit(
+                f'config error: {label}: data_dir ({cfg["data_dir"]}) is inside '
+                f'archive_repo ({repo}); keep them side by side')
+        for other, ocfg in sources.items():
+            if other == name:
+                continue
+            if _within(ocfg['source_dir'], repo):
+                raise SystemExit(
+                    f'config error: {label}: archive_repo ({repo}) is, or '
+                    f'contains, the source_dir of "{other}" ({ocfg["source_dir"]})')
+            if _within(ocfg['archive_repo'], repo):
+                raise SystemExit(
+                    f'config error: sources "{name}" and "{other}" share or '
+                    f'nest their archive_repo ({repo} / {ocfg["archive_repo"]}); '
+                    'each source needs an archive of its own')
+
+
+def archive_problem(repo: Path, source_dir: Path):
+    """Why `repo` must not be used as an archive, or None when it is safe.
+
+    Judged from what is on disk, not from how the path is spelled, so it
+    holds when the same folder is reachable under two names (\\\\server\\share
+    and C:\\share, a mapped drive, a junction) -- the case a path comparison
+    cannot see and the one that turns "replace the archived copy" into
+    "delete the live project"."""
+    if not repo.exists():
+        return None                      # will be created empty by ensure_repo
+    if not repo.is_dir():
+        return f'archive_repo is not a folder: {repo}'
+    try:
+        if source_dir.exists() and os.path.samefile(repo, source_dir):
+            return (f'archive_repo ({repo}) and source_dir ({source_dir}) are '
+                    'the same folder')
+    except OSError:
+        pass
+    # An archive holds extracted project trees, never project files. One at
+    # the top or one level down (where DriveWorks keeps them) means this is a
+    # project share, whatever else is true of it.
+    for pattern in ('*.driveprojx', '*/*.driveprojx'):
+        hit = next(iter(repo.glob(pattern)), None)
+        if hit is not None:
+            return (f'archive_repo ({repo}) contains DriveWorks project files '
+                    f'(e.g. {hit.relative_to(repo).as_posix()}) -- it looks like '
+                    'a live project folder, not an archive')
+    if not (repo / '.git').is_dir() and next(iter(repo.iterdir()), None) is not None:
+        return (f'archive_repo ({repo}) is not empty and is not an existing '
+                'archive (no .git) -- refusing to take over a folder with '
+                'other content in it; point archive_repo at a new, empty folder')
+    return None
+
+
+def archive_name_problem(name: str):
+    """Why a project name cannot be used as an archive folder, or None.
+
+    The archived copy lives at <archive_repo>/<name> and is removed and
+    re-created on every change, so the name must resolve to exactly one
+    ordinary child of the archive: "." is the archive itself, ".git" is its
+    history, and Windows silently drops a trailing dot or space, landing the
+    path on a different project's folder."""
+    if name in ('', '.', '..') or name.startswith('.'):
+        return 'name starts with a dot'
+    if name != name.rstrip('. '):
+        return 'name ends with a dot or space'
+    if any(c in name for c in '/\\:'):
+        return 'name contains a path separator'
+    return None
+
+
 # Keys that governed behaviour in an earlier version and now do nothing. A
 # config in the field still carries them; silently ignoring a setting someone
 # deliberately wrote is how a site ends up believing a knob is protecting it.
@@ -257,6 +363,7 @@ def load_config(path: Path) -> dict:
             }
         cfg['data_dir'] = Path(cfg['data_dir'])
         cfg['sources_resolved'] = resolved
+        _validate_layout(cfg)
         return cfg
 
     missing = [k for k in REQUIRED_KEYS if not cfg.get(k)]
@@ -272,6 +379,7 @@ def load_config(path: Path) -> dict:
         'db_server': str(cfg.get('db_server') or ''),
         'db_database': str(cfg.get('db_database') or ''),
     }}
+    _validate_layout(cfg)
     return cfg
 
 
@@ -608,6 +716,11 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
     name = zip_path.stem
     key = census_key(source, name)
 
+    bad = archive_name_problem(name)
+    if bad:
+        raise ValueError(f'cannot archive a project called {name!r} ({bad}); '
+                         'rename the file or add an exclude')
+
     local_zip = staging / zip_path.name
     copy_with_retries(zip_path, local_zip)
 
@@ -717,6 +830,24 @@ def _already_marked_removed(conn, project: str, source: str = '') -> bool:
         "AND category='project' ORDER BY id DESC LIMIT 1",
         (project, source)).fetchone()
     return row is not None and row[0] == 'removed'
+
+
+def _live_archived(repo: Path, census: dict, conn, source: str = '') -> list:
+    """Archived projects still considered present: not census-ignored and not
+    already recorded as removed."""
+    if not repo.is_dir():
+        return []
+    out = []
+    for d in sorted(repo.iterdir()):
+        if not d.is_dir() or d.name.startswith('.'):
+            continue
+        key = census_key(source, d.name)
+        if census['projects'].get(key, {}).get('disposition') == 'ignore':
+            continue
+        if _already_marked_removed(conn, d.name, source):
+            continue
+        out.append(d.name)
+    return out
 
 
 def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
@@ -854,6 +985,22 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
         if group_db is not None:
             group_db.close()
 
+    # A share that shows no project files at all, against an archive that
+    # holds some, reads as "every project was deleted" -- and handle_missing
+    # would record exactly that, and with remove_missing empty the archive.
+    # A wrong subfolder, a share that mounted empty, or an exclude that
+    # matches everything is far likelier than a site retiring every project
+    # in one night, so treat it as the source being unavailable. One archived
+    # project vanishing is just a project being deleted, and is recorded.
+    if not zips and len(_live_archived(scfg['archive_repo'], census, conn, sname)) > 1:
+        log.error('[%s] no project files found under %s (%d excluded) but the '
+                  'archive holds projects -- not recording them as removed; '
+                  'check the folder and the exclude list',
+                  label, scfg['source_dir'], len(excluded))
+        errors.append(f'{label}: no project files found under '
+                      f'{scfg["source_dir"]}; archive left as is')
+        return 0, conflicts
+
     handle_missing(seen, scfg['archive_repo'], cfg, run_date, conn, dry_run,
                    census, sname)
     return len(zips), conflicts
@@ -920,6 +1067,14 @@ def run(cfg: dict, dry_run: bool) -> int:
                           sname or 'source', scfg['source_dir'])
                 errors.append(f'{sname or "source"}: source_dir unreachable '
                               f'({scfg["source_dir"]})')
+                continue
+            # Before anything is created, compared or deleted, and on a dry
+            # run too -- a dry run is where a bad archive_repo should be found.
+            problem = archive_problem(scfg['archive_repo'], scfg['source_dir'])
+            if problem:
+                log.error('[%s] %s -- skipping this source; nothing was touched',
+                          sname or 'source', problem)
+                errors.append(f'{sname or "source"}: {problem}')
                 continue
             # Not on a dry run: ensure_repo git-inits a missing archive and
             # writes user.name/user.email into an existing one's .git/config.
