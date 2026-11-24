@@ -394,7 +394,8 @@ def census_key(source_name: str, project: str) -> str:
 
 def find_projects(source_dir: Path, recursive: bool,
                   exclude: list = (),
-                  excluded_out: list = None) -> list:
+                  excluded_out: list = None,
+                  unreadable_out: list = None) -> list:
     """Every *.driveprojx under source_dir, minus any whose path (relative to
     source_dir, posix, case-insensitive) matches an `exclude` glob. `*` spans
     slashes, so "*archive*" drops anything with an archive folder anywhere in
@@ -402,20 +403,44 @@ def find_projects(source_dir: Path, recursive: bool,
 
     If `excluded_out` is provided, each dropped file is appended to it as a
     (relative_posix_path, matching_pattern) tuple so the caller can report
-    exactly what was skipped and why."""
-    pattern = '**/*.driveprojx' if recursive else '*.driveprojx'
+    exactly what was skipped and why.
+
+    If `unreadable_out` is provided, every folder that could not be listed is
+    appended to it as (relative_posix_path, error). A walk that hits one is
+    INCOMPLETE: the projects under that folder are absent from the result
+    because nobody could look, not because they are gone. Path.glob, which
+    this used to be, swallows those errors -- a share that dropped out for a
+    second mid-walk returned a shorter list and nothing else, and the caller
+    recorded the difference as deleted projects."""
     pats = [e.lower() for e in exclude]
     out = []
-    for p in source_dir.glob(pattern):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(source_dir).as_posix()
-        matched = next((pat for pat in pats if fnmatch.fnmatchcase(rel.lower(), pat)), None)
-        if matched is not None:
-            if excluded_out is not None:
-                excluded_out.append((rel, matched))
-            continue
-        out.append(p)
+
+    def unreadable(err: OSError) -> None:
+        if unreadable_out is None:
+            return
+        where = Path(getattr(err, 'filename', None) or source_dir)
+        try:
+            rel = where.relative_to(source_dir).as_posix()
+        except ValueError:
+            rel = str(where)
+        unreadable_out.append((rel, err.strerror or str(err)))
+
+    for dirpath, dirnames, filenames in os.walk(source_dir, onerror=unreadable):
+        if not recursive:
+            dirnames[:] = []
+        for fname in filenames:
+            if not fnmatch.fnmatch(fname, '*.driveprojx'):
+                continue
+            p = Path(dirpath) / fname
+            if not p.is_file():
+                continue
+            rel = p.relative_to(source_dir).as_posix()
+            matched = next((pat for pat in pats if fnmatch.fnmatchcase(rel.lower(), pat)), None)
+            if matched is not None:
+                if excluded_out is not None:
+                    excluded_out.append((rel, matched))
+                continue
+            out.append(p)
     return sorted(out)
 
 
@@ -950,8 +975,9 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
     """Sync one named source. Returns (files_found, conflicts)."""
     label = sname or 'source'
     excluded = []
+    unreadable = []
     zips = find_projects(scfg['source_dir'], scfg['recursive'],
-                         scfg['exclude'], excluded)
+                         scfg['exclude'], excluded, unreadable)
     log.info('[%s] found %d project file(s) under %s (%d excluded by %d pattern(s))',
              label, len(zips), scfg['source_dir'], len(excluded), len(scfg['exclude']))
     # On a dry run, spell out exactly what was skipped and by which pattern
@@ -984,6 +1010,20 @@ def _run_source(sname: str, scfg: dict, cfg: dict, census: dict, conn,
         shutil.rmtree(staging_root, ignore_errors=True)
         if group_db is not None:
             group_db.close()
+
+    # Part of the share could not be listed, so what was found is not the
+    # whole picture. Everything found has been synced above; what must not
+    # happen is reading the gap as deletions.
+    if unreadable:
+        shown = '; '.join(f'{rel} ({why})' for rel, why in unreadable[:5])
+        more = f' (+{len(unreadable) - 5} more)' if len(unreadable) > 5 else ''
+        log.error('[%s] %d folder(s) under %s could not be read: %s%s -- the '
+                  'listing is incomplete, so no project is being recorded as '
+                  'removed this run', label, len(unreadable),
+                  scfg['source_dir'], shown, more)
+        errors.append(f'{label}: {len(unreadable)} folder(s) unreadable under '
+                      f'{scfg["source_dir"]}; missing-project check skipped')
+        return len(zips), conflicts
 
     # A share that shows no project files at all, against an archive that
     # holds some, reads as "every project was deleted" -- and handle_missing

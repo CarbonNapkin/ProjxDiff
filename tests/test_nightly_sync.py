@@ -841,3 +841,48 @@ def test_a_source_showing_no_projects_is_not_every_project_removed(site):
     with _db(site) as db:
         assert db.execute("SELECT COUNT(*) FROM element_changes "
                           "WHERE status='removed'").fetchone()[0] == 0
+
+
+def test_an_unreadable_folder_is_reported_not_silently_skipped(tmp_path):
+    _write_projx(tmp_path / 'ok' / 'A.driveprojx', {'W': '=1'})
+    locked = tmp_path / 'locked'
+    _write_projx(locked / 'B.driveprojx', {'W': '=1'})
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip('cannot make a folder unreadable here')
+        unreadable = []
+        found = nightly_sync.find_projects(tmp_path, True, (), None, unreadable)
+        assert [p.name for p in found] == ['A.driveprojx']
+        assert [rel for rel, _ in unreadable] == ['locked']
+    finally:
+        locked.chmod(0o755)
+
+
+def test_a_partial_listing_never_counts_as_deletions(site, monkeypatch):
+    """The share drops out mid-walk: one project is found, the folder holding
+    the other cannot be listed. The found one syncs; the other is neither
+    marked removed nor pruned, even with remove_missing on."""
+    assert _run(site) == 0
+    cfg = json.loads(site['cfg_path'].read_text(encoding='utf-8'))
+    cfg['remove_missing'] = True
+    site['cfg_path'].write_text(json.dumps(cfg), encoding='utf-8')
+    _write_projx(site['source'] / 'Alpha.driveprojx', {'Width': '=900'})
+
+    real = nightly_sync.find_projects
+
+    def flaky(source_dir, recursive, exclude=(), excluded_out=None,
+              unreadable_out=None):
+        if unreadable_out is not None:
+            unreadable_out.append(('sub', 'The network path was not found'))
+        return [p for p in real(source_dir, recursive, exclude, excluded_out)
+                if p.stem != 'Beta']
+
+    import dw_compare.sync as sync_mod
+    monkeypatch.setattr(sync_mod, 'find_projects', flaky)
+    assert _run(site) == 1
+    assert (site['repo'] / 'Beta').is_dir()
+    assert 'Alpha: +' in _git_log(site['repo'])[0][0]
+    with _db(site) as db:
+        assert db.execute("SELECT COUNT(*) FROM element_changes WHERE "
+                          "category='project' AND status='removed'").fetchone()[0] == 0

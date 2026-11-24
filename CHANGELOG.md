@@ -4,6 +4,24 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.12.2] - 2026-11-24
+
+### Fixed
+
+- **A share that drops out part-way through the nightly scan no longer
+  turns into deleted projects.** The scan silently skipped any folder it
+  could not list, so a network hiccup returned a shorter list of projects
+  and the sync recorded the rest as removed (and pruned them from the
+  archive with `remove_missing`). Unreadable folders are now reported by
+  name; everything that was found still syncs, the missing-project check is
+  skipped for that source, and the run exits non-zero.
+- **The Windows installer refuses a folder that holds another program's
+  `_internal` directory.** Upgrades wipe `_internal` so runtimes never mix,
+  but that name belongs to PyInstaller, not to Projx Diff: choosing another
+  PyInstaller-built program's folder as the install location would have
+  deleted its runtime. The installer now stops before touching anything
+  unless the folder is already a Projx Diff install.
+
 ## [1.12.1] - 2026-11-24
 
 ### Fixed

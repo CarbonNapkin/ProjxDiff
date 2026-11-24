@@ -228,6 +228,30 @@ begin
   end;
 end;
 
+// --------------------------------------------------------------------------
+// Never install over somebody else's _internal folder.
+//
+// [InstallDelete] wipes {app}\_internal so an upgrade cannot mix runtimes.
+// _internal is not our name, it is PyInstaller's: any other PyInstaller-built
+// program keeps its whole runtime in a folder called exactly that. Pick such
+// a program's folder as the install location and the wipe takes its runtime
+// with it. PrepareToInstall runs before anything is deleted or copied, and
+// its message is shown (or logged, when silent) instead of installing.
+// --------------------------------------------------------------------------
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if DirExists(ExpandConstant('{app}\_internal'))
+     and not FileExists(ExpandConstant('{app}\ProjxDiff.exe'))
+     and not FileExists(ExpandConstant('{app}\unins000.exe')) then
+    Result := 'The folder ' + ExpandConstant('{app}') + ' already contains an '
+              + '"_internal" folder that does not belong to Projx Diff. '
+              + 'Installing here would delete it. Choose a different folder, '
+              + 'or remove that "_internal" folder first if it is left over '
+              + 'from an interrupted Projx Diff install.';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
