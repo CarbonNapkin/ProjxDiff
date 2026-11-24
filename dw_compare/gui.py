@@ -29,6 +29,7 @@ from ._version import __version__, __author__, __license__
 from .parsers import load_project
 from .report import generate_html_report
 from .update_check import check_for_update, DOWNLOAD_PAGE
+from . import advisory as advisory_mod
 
 try:
     from .__main__ import (resolve_input, cleanup_temp_dirs, resolve_output_path,
@@ -245,6 +246,32 @@ def _save_setting(key: str, value) -> None:
                                   encoding='utf-8')
     except Exception:
         pass  # settings are a convenience; never fail an action over them
+
+
+def advisory_prompt(advisories: list, newer) -> dict:
+    """What the app should say about the advisories covering this version.
+    Pure, so the wording and the modal/quiet decision are testable without a
+    window: {'modal', 'title', 'text', 'offer_update', 'notice'}."""
+    crit = advisory_mod.critical(advisories)
+    shown = crit or advisories
+    body = '\n\n'.join(a['summary'] for a in shown[:3])
+    if len(shown) > 3:
+        body += f'\n\n(+{len(shown) - 3} more — see the log.)'
+    if newer:
+        notice = (f'⚠ Important update: v{newer} — click to download & install')
+        action = f'\n\nUpdate to v{newer} now?'
+    else:
+        notice = ''
+        action = ('\n\nNo fixed version has been published yet. Check '
+                  f'{DOWNLOAD_PAGE} before relying on this copy.')
+    return {
+        'modal': bool(crit),
+        'title': 'Important update for Projx Diff',
+        'text': (f'This version of Projx Diff (v{__version__}) has a known '
+                 f'problem:\n\n{body}{action}'),
+        'offer_update': bool(crit and newer),
+        'notice': notice,
+    }
 
 
 def _load_manager_config(path: Path) -> dict:
@@ -1584,13 +1611,39 @@ class CompareApp:
         self.root.after(200, lambda: self.log_box.see('end'))
 
     def _check_updates(self) -> None:
-        """Free, fail-silent update check; runs off the UI thread on launch."""
+        """Free, fail-silent update check; runs off the UI thread on launch.
+        Also asks whether THIS version is covered by an advisory -- the
+        difference between "something newer exists" and "stop and update"."""
         newer = check_for_update()
         if newer:
             try:
                 self.root.after(0, lambda: self._show_update(newer))
             except Exception:
                 pass  # window already closed
+        advisories = advisory_mod.check(timeout=2.5)
+        if advisories:
+            try:
+                self.root.after(0, lambda: self._show_advisories(advisories, newer))
+            except Exception:
+                pass
+
+    def _show_advisories(self, advisories: list, newer) -> None:
+        """A critical advisory interrupts: a dialog that has to be answered,
+        offering the one-click update when there is one. Anything less
+        serious upgrades the update notice's wording and goes in the log --
+        it should be seen, not clicked through."""
+        prompt = advisory_prompt(advisories, newer)
+        for adv in advisories:
+            self._log_queue.put('\n' + advisory_mod.describe(adv) + '\n')
+        if prompt['notice']:
+            self.update_label.configure(text=prompt['notice'])
+        if not prompt['modal']:
+            return
+        if prompt['offer_update']:
+            if messagebox.askyesno(prompt['title'], prompt['text'], icon='warning'):
+                self._start_update(newer)
+        else:
+            messagebox.showwarning(prompt['title'], prompt['text'])
 
     def _show_update(self, newer: str) -> None:
         self.update_label.configure(

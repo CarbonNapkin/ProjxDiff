@@ -4,6 +4,33 @@ All notable changes to Projx Diff are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] - 2026-11-24
+
+### Added
+
+- **Advisories: installed copies can now be told that their version has a
+  known problem.** Until now an update notice looked the same whether the
+  new release added a dashboard filter or fixed a bug that could delete
+  project files — and the nightly sync, the one mode that deletes anything,
+  never checked at all. Projx Diff now reads `advisories.json` from this
+  repository (a commit publishes one; no release needed) in the app, on the
+  command line and at the start of every nightly run.
+  - An **important** advisory turns the app's update notice into "Important
+    update", is logged by the sync and listed on the dashboard.
+  - A **critical** advisory interrupts the app with a dialog offering the
+    one-click update, and puts the **nightly sync on hold**: new projects
+    are still archived, but nothing in the archive is replaced or removed
+    until the install is updated. Held changes are not lost — the archive is
+    untouched, so the first run after the update records them in full. The
+    run exits non-zero and the dashboard's attention panel says why.
+  - Everything fails open: if the list cannot be read the tool runs as
+    normal. The nightly sync keeps the last list it read, so a hold survives
+    a night without internet.
+  - An advisory is one line of text. It cannot disable the tool, run
+    anything or supply a link.
+  - `--doctor` reports any advisory covering the running version. See
+    "Advisories" in the README for the file format and how to test one.
+
 ## [1.12.2] - 2026-11-24
 
 ### Fixed

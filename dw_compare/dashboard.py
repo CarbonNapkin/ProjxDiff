@@ -242,10 +242,22 @@ def _attention_html(census: dict) -> str:
     pending = census_mod.pending_projects(census)
     unmapped = census_mod.unmapped_users(census)
     conflicts = census.get('conflicts', [])
-    if not pending and not unmapped and not conflicts:
+    advisories = census.get('advisories', [])
+    if not pending and not unmapped and not conflicts and not advisories:
         return ''
 
     items = []
+    for a in advisories:
+        fixed = a.get('fixed')
+        held = (' <b>The nightly sync is on hold:</b> changed projects are not '
+                'being archived until this install is updated.'
+                if a.get('held') else '')
+        items.append(
+            f'<li><b>{escape(str(a.get("severity", "")).capitalize())} advisory:</b> '
+            f'{escape(str(a.get("summary", "")))}'
+            + (f' Fixed in {escape(str(fixed))} &mdash; update Projx Diff.'
+               if fixed else ' No fixed version yet.')
+            + held + '</li>')
     for name, path in pending:
         items.append(f'<li><b>New project:</b> {escape(name)} '
                      f'<span class="muted">({escape(path)})</span> — track or ignore?</li>')

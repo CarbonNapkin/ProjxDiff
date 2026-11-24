@@ -21,6 +21,7 @@ from .parsers import load_project
 from .report import generate_html_report
 from .jsondiff import build_diff
 from .update_check import check_for_update, DOWNLOAD_PAGE
+from . import advisory as advisory_mod
 
 # Track temp dirs for cleanup
 _temp_dirs = []
@@ -263,6 +264,17 @@ def doctor() -> int:
         if frozen and sys.platform == 'win32':
             print('FAIL: a packaged Windows build must bundle pyodbc')
             return 1
+    # Informational only: an advisory never changes the exit code, which is
+    # reserved for "this build is broken".
+    doc = advisory_mod.fetch(timeout=2.5)
+    if doc is None:
+        print('advisory could not read the advisory list (offline?)')
+    else:
+        found = advisory_mod.applicable(doc)
+        print('advisory ' + ('none for this version' if not found
+                             else f'{len(found)} for this version'))
+        for adv in found:
+            print('         ' + advisory_mod.describe(adv))
     return 0
 
 
@@ -482,6 +494,9 @@ Examples:
     newer = check_for_update()
     if newer:
         print(f"\nℹ️  Update available: v{newer} — {DOWNLOAD_PAGE}")
+    for adv in advisory_mod.check(timeout=2.5):
+        print(f"\n⚠️  {advisory_mod.describe(adv)}")
+        print(f"   You are running v{__version__} — {DOWNLOAD_PAGE}")
 
     # Auto-open in browser. Use as_uri() so the file:// URL is well-formed on
     # Windows (drive letters / backslashes) and has spaces percent-encoded.

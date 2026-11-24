@@ -142,6 +142,53 @@ written. It is idempotent — safe to re-run.
 See [scripts/nightly_sync/README.md](scripts/nightly_sync/README.md) for
 setup (Windows Task Scheduler) and the config format.
 
+## Advisories (telling installed copies about a bad version)
+
+Every copy of Projx Diff from 1.13.0 on asks one question besides "is there
+an update?": *is the version I am running covered by an advisory?* The app
+asks at launch, the command line after a compare, and the nightly sync at
+the start of every run. The answer comes from [`advisories.json`](advisories.json)
+at the root of this repository — **publishing an advisory is a commit to the
+default branch, not a release**, and installed copies see it within minutes.
+
+```json
+{
+  "schema": 1,
+  "advisories": [
+    {
+      "id": "2026-11-archive-overlap",
+      "severity": "critical",
+      "introduced": "1.2.0",
+      "fixed": "1.12.1",
+      "summary": "One or two plain sentences: what can go wrong, and for whom."
+    }
+  ]
+}
+```
+
+- `fixed` is the first version that is **not** affected; leave it out when no
+  fix exists yet. `introduced` is optional (absent = every earlier version).
+- `severity: "important"` — the app's update notice becomes "Important
+  update", the sync logs a warning, the dashboard lists it. Nothing else
+  changes.
+- `severity: "critical"` — the app shows a dialog that must be answered and
+  offers the one-click update. **The nightly sync goes on hold**: new
+  projects are still added to the archive, but nothing in it is replaced or
+  removed, the run exits non-zero, and the dashboard says so. The archived
+  copy is untouched, so the first run after updating records the whole
+  held-back change.
+
+An advisory cannot stop the tool, run anything, or supply a link — it is one
+line of text. If the list cannot be read (offline, rate-limited, malformed)
+the tool runs normally; the nightly sync falls back to the last list it read
+(`<data_dir>/advisory_cache.json`), so a hold survives a night without
+internet. Withdraw an advisory by removing its entry.
+
+To see how a copy behaves before publishing, point it at a file of your own:
+`PROJXDIFF_ADVISORY_URL=C:\temp\advisories.json ProjxDiff-cli.exe --doctor`
+(or `--sync config.json --dry-run`). Only versions 1.13.0 and later read
+advisories at all.
+
 ## Group Database Name Resolution (optional)
 
 Captured models and rule changes reference components by GUID inside the

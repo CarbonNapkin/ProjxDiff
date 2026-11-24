@@ -45,6 +45,7 @@ from ._version import __version__
 from .parsers import load_project
 from .report import generate_html_report
 from .jsondiff import build_diff
+from . import advisory as advisory_mod
 from . import census as census_mod
 from .census import read_last_saver  # noqa: F401  (re-exported for back-compat)
 
@@ -736,8 +737,8 @@ def _write_reports(name: str, source: str, run_date: str, reports_dir: Path,
 def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
              run_date: str, conn, reports_dir: Path, dry_run: bool,
              census: dict, source: str = '', group_db=None):
-    """Sync a single project. Returns 'changed', 'new', 'rebuilt' or
-    'unchanged'."""
+    """Sync a single project. Returns 'changed', 'new', 'rebuilt',
+    'unchanged', or 'held' (changed, but the run is on hold)."""
     name = zip_path.stem
     key = census_key(source, name)
 
@@ -776,6 +777,16 @@ def sync_one(zip_path: Path, repo: Path, staging: Path, cfg: dict,
             commit_project(repo, name, f'{name}: added to archive', author)
             record_project_event(conn, run_date, name, owner, 'added', source)
         return 'new'
+
+    # On hold (a critical advisory covers this version -- see run): adding a
+    # project the archive has never seen is safe, replacing one it has is
+    # exactly the kind of step an advisory exists to stop. The archived copy
+    # stays as it is, so nothing is lost: the first run after the update
+    # diffs against it and records the whole change then.
+    if cfg.get('_hold'):
+        log.warning('[HELD] %s -- changed on the share, not archived while '
+                    'advisory %s is in effect', key, cfg['_hold'])
+        return 'held'
 
     old_proj = load_project(repo_dir)
     new_proj = load_project(new_dir)
@@ -901,7 +912,10 @@ def handle_missing(seen: set, repo: Path, cfg: dict, run_date: str,
             continue
         if not _already_marked_removed(conn, d.name, source):
             record_project_event(conn, run_date, d.name, owner, 'removed', source)
-        if cfg['remove_missing']:
+        if cfg['remove_missing'] and cfg.get('_hold'):
+            log.warning('[MISSING] %s -- gone from source; NOT removed from the '
+                        'archive while advisory %s is in effect', key, cfg['_hold'])
+        elif cfg['remove_missing']:
             log.info('[MISSING] %s -- removing from archive (remove_missing=true)', key)
             shutil.rmtree(d)
             commit_project(repo, d.name, f'{d.name}: removed (gone from source)', owner)
@@ -1096,8 +1110,30 @@ def run(cfg: dict, dry_run: bool) -> int:
             if healed:
                 log.info('healed %d metrics row(s) with newly mapped identities', healed)
 
-        counts = {'changed': 0, 'new': 0, 'unchanged': 0, 'rebuilt': 0}
+        counts = {'changed': 0, 'new': 0, 'unchanged': 0, 'rebuilt': 0,
+                  'held': 0}
         errors = []
+
+        # Is this version one we have been told not to trust? Asked on every
+        # run, dry runs included, because this is the only place an
+        # unattended install ever hears about it. Nothing here can stop the
+        # run; a critical advisory narrows it to steps that only add.
+        advisories, adv_source = advisory_mod.load(
+            data_dir / 'advisory_cache.json', write_cache=not dry_run)
+        for adv in advisories:
+            log.warning('advisory%s: %s',
+                        ' (from the last copy read; could not reach the list)'
+                        if adv_source == 'cached' else '',
+                        advisory_mod.describe(adv))
+        held_by = advisory_mod.critical(advisories)
+        cfg['_hold'] = held_by[0]['id'] if held_by else ''
+        if held_by:
+            log.error('ON HOLD: Projx Diff %s is covered by a critical advisory. '
+                      'New projects are still added to the archive; nothing in '
+                      'it will be replaced or removed until this copy is '
+                      'updated.', __version__)
+            errors.append(f'on hold -- critical advisory {cfg["_hold"]}: '
+                          f'update Projx Diff (running {__version__})')
         all_conflicts = []
         total_found = 0
 
@@ -1130,6 +1166,14 @@ def run(cfg: dict, dry_run: bool) -> int:
             all_conflicts.extend(conflicts)
 
         census['conflicts'] = all_conflicts
+        # For the dashboard's attention panel, which is where the people who
+        # never open sync.log will see it. Cleared the first run it no longer
+        # applies.
+        if advisories:
+            census['advisories'] = [dict(a, held=a['severity'] == 'critical')
+                                    for a in advisories]
+        else:
+            census.pop('advisories', None)
         # Deferral is gone (see PROJECT_LOCK_SUFFIX). Drop the list a pre-1.9.0
         # run left behind so the attention panel does not keep naming projects
         # that have long since synced.
@@ -1179,10 +1223,11 @@ def run(cfg: dict, dry_run: bool) -> int:
                                     sname or 'source', proc.stderr.strip())
 
         log.info('done: %d changed, %d new, %d rebuilt, %d unchanged, '
-                 '%d error(s)%s',
+                 '%s%d error(s)%s',
                  counts['changed'], counts['new'], counts['rebuilt'],
-                 counts['unchanged'], len(errors),
-                 ' [dry run]' if dry_run else '')
+                 counts['unchanged'],
+                 f'{counts["held"]} held, ' if cfg['_hold'] else '',
+                 len(errors), ' [dry run]' if dry_run else '')
         return 1 if errors else 0
     finally:
         if conn is not None:
